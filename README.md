@@ -55,7 +55,7 @@ Extract the cab of the driver and name the folder as the model name i.e. Latitud
 
 run the New-WinPEMedia script for example:
 ``` PowerShell
-New-WinPEMedia.ps1 -wimpath "C:\Temp\adk\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\en-us\winpe.wim" ´
+New-WinPEMedia.ps1 -wimpath "C:\Temp\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\en-us\winpe.wim" ´
 -packagepath "C:\Temp\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs" ´
 -winpemedia "C:\Temp\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\Media" ´
 -driverspath "C:\Temp\winpedrivers"
