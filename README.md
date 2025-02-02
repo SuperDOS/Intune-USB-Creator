@@ -6,13 +6,15 @@ https://powers-hell.com/2020/05/04/create-a-bootable-windows-10-autopilot-device
 
 Works for Windows 11 and added function to register hardware hash in winpe via microsof graph api.
 
+Logic for extraction of autopilot hash: [https://mikemdm.de/2023/01/29/can-you-create-a-autopilot-hash-from-winpe-yes/](https://mikemdm.de/2023/01/29/can-you-create-a-autopilot-hash-from-winpe-yes/)
+
 It consists of three scripts to prepare a bootable usb stick which can be used to image a computer with Windows.
 
 ## Pre-Reqs
 
 - [PowerShell 7](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell-core-on-windows?view=powershell-7)
 - A copy of Windows 10/11 iso
-- [Windows ADK](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install)
+- [Windows WinPE add-on for the Windows ADK](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install)
 
 ## How to use
 
@@ -21,18 +23,21 @@ Creates the WinPEMedia that will be written to the USB-stick
 
 To create WinPE media you will need Windows ADK.
 
-Download adkwinpesetup.exe from https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install
+Download adkwinpesetup.exe from [https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install)
+
+Run adkwinpesetup.exe /installpath c:\temp\adkoffline /quiet
+
 this will give you these paths
 
-"C:\Temp\adk\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\Media"
+"C:\Temp\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\Media"
 
-"C:\Temp\adk\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\en-us"
+"C:\Temp\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\en-us"
 
-"C:\Temp\adk\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs"
+"C:\Temp\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs"
 
 The directory "pe-files" contains three files
 
-**PCPKsp.dll** - needed to be able to extract hash from the machine in WinPE
+**PCPKsp.dll** - needed to be able to extract hash from the machine in WinPE, need to get your own copy from a C:\Windows\System32 on a Windows 10/11 machine
 
 **startnet.cmd** - command file that starts Intune USB Creator
 
@@ -46,13 +51,13 @@ If you need WinPE drivers for certain machines you need to download a cab from t
 
 **HP:** https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HP_WinPE_DriverPack.html
 
-Extract the cab of the driver
+Extract the cab of the driver and name the folder as the model name i.e. Latitude 5350
 
 run the New-WinPEMedia script for example:
 ``` PowerShell
 New-WinPEMedia.ps1 -wimpath "C:\Temp\adk\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\en-us\winpe.wim" ´
--packagepath "C:\Temp\adk\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs" ´
--winpemedia "C:\Temp\adk\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\Media" ´
+-packagepath "C:\Temp\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs" ´
+-winpemedia "C:\Temp\adkoffline\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\Media" ´
 -driverspath "C:\Temp\winpedrivers"
 ```
 This will create a new boot.wim and necessary files in the folder WinPE-Media
@@ -61,7 +66,9 @@ This will create a new boot.wim and necessary files in the folder WinPE-Media
 
 Creates the IUC data folder that is needed for the bootable USB stick
 
-Will download powershell
+in the IUC-Script folder contains the main script and oa3tool.exe to extract autopilot hash
+
+the script will download powershell 7
 
 extract Wim file from the Windows iso.
 
@@ -70,7 +77,7 @@ New-IUC-Data-Folder.ps1 -windowsIsoPath .\iso\win.iso
 -winPEMediaPath .\WinPE-Media
 -winPEwim .\WinPE-Media\sources\boot.wim ´
 ```
-In the folder IUC data folder there will be folders
+In the folder IUC data folder there will be these folders
 
 Drivers = Computer model drivers
 
