@@ -15,10 +15,12 @@ It consists of three scripts to prepare a bootable usb stick which can be used t
 - [PowerShell 7](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell-core-on-windows?view=powershell-7)
 - A copy of Windows 10/11 iso
 - [Windows WinPE add-on for the Windows ADK](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install)
+- A copy of PCPKsp.dll (found on C:\Windows\System32 on a Windows 10/11 machine)
+- A copy of oa3tool.exe (found in [Windows ADK Deployment Tools](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install), run ".\adksetup.exe /installpath C:\temp\adk /features OptionId.DeploymentTools /quiet"  and copy C:\Temp\adk\Assessment and Deployment Kit\Deployment Tools\amd64\Licensing\OA30\oa3tool.exe)
 
 ## How to use
 
-**New-WinPEMedia.ps1** (Need to be run as administrator)
+**New-WinPEMedia.ps1** (Needs to be run as administrator)
 Creates the WinPEMedia that will be written to the USB-stick
 
 To create WinPE media you will need Windows ADK.
@@ -66,7 +68,7 @@ This will create a new boot.wim and necessary files in the folder WinPE-Media
 
 Creates the IUC data folder that is needed for the bootable USB stick
 
-in the IUC-Script folder contains the main script and oa3tool.exe to extract autopilot hash
+in the IUC-Script folder contains the main script and oa3tool.exe (add from Windows ADK) to extract autopilot hash
 
 the script will download powershell 7
 
@@ -88,6 +90,8 @@ Packages = Windows packages, like language packs
 WinPE = WinPE data from WinPE-data folder
 
 **Publish-ImageToUSB.ps1**
+
+This will create the bootable usb stick and if the WinPE and IUC-data folder is prepared go ahead and run it :)
 
 ``` PowerShell
 Publish-ImageToUSB.ps1 -IUCdataPath .\IUC-data
