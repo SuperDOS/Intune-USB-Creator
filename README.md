@@ -25,7 +25,7 @@ It consists of three scripts to prepare a bootable usb stick which can be used t
 **New-WinPEMedia.ps1** (Needs to be run as administrator)
 Creates the WinPEMedia that will be written to the USB-stick
 
-To create WinPE media you will need Windows ADK.
+To create WinPE media you will need Windows WinPE add-on for Windows ADK.
 
 Download adkwinpesetup.exe from [https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install)
 
