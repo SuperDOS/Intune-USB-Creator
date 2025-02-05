@@ -96,7 +96,7 @@ Drivers = Computer model drivers, extract driver cab from the manufacturer and n
 
 Images = Windows image
 
-Packages = Windows packages, like language packs
+Packages = Windows packages, i.e. language packs, dotnet 3.5
 
 WinPE = WinPE data from WinPE-data folder
 
