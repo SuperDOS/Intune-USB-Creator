@@ -20,6 +20,15 @@ It consists of three scripts to prepare a bootable usb stick which can be used t
 - Register an Enterprise app in Entra under App registration with permission DeviceManagementServiceConfig.ReadWrite.All and admin consent, create a client secret for uploading of hashes to intune
 ![image](https://github.com/user-attachments/assets/1b8c2dce-06ee-4dad-801f-c625c2f7c2e2)
 
+## Optional
+Computer model drivers
+
+**Dell:** [https://www.dell.com/support/kbdoc/en-us/000124139/dell-command-deploy-driver-packs-for-enterprise-client-os-deployment](https://www.dell.com/support/kbdoc/en-us/000124139/dell-command-deploy-driver-packs-for-enterprise-client-os-deployment)
+
+**HP:** [https://hpia.hpcloud.hp.com/downloads/driverpackcatalog/HP_Driverpack_Matrix_x64.html](https://hpia.hpcloud.hp.com/downloads/driverpackcatalog/HP_Driverpack_Matrix_x64.html)
+
+**Lenovo:** [https://support.lenovo.com/us/en/solutions/ht074984-microsoft-system-center-configuration-manager-sccm-and-microsoft-deployment-toolkit-mdt-package-index](https://support.lenovo.com/us/en/solutions/ht074984-microsoft-system-center-configuration-manager-sccm-and-microsoft-deployment-toolkit-mdt-package-index)
+
 ## How to use
 
 **New-WinPEMedia.ps1** (Needs to be run as administrator)
@@ -43,7 +52,7 @@ The directory "pe-files" contains three files
 
 **PCPKsp.dll** - needed to be able to extract hash from the machine in WinPE, need to get your own copy from a C:\Windows\System32 on a Windows 10/11 machine
 
-**startnet.cmd** - command file that starts Intune USB Creator
+**startnet.cmd** - command file that starts Intune USB Deployment
 
 **winpe.jpg** - the background image for WinPE
 
@@ -55,7 +64,7 @@ If you need WinPE drivers for certain machines you need to download a cab from t
 
 **HP:** https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HP_WinPE_DriverPack.html
 
-Extract the cab of the driver and name the folder as the model name i.e. Latitude 5350
+Extract the cab of the winpe drivers to a desired folder
 
 run the New-WinPEMedia script for example:
 ``` PowerShell
@@ -83,7 +92,7 @@ New-IUC-Data-Folder.ps1 -windowsIsoPath .\iso\win.iso
 ```
 In the folder IUC data folder there will be these folders
 
-Drivers = Computer model drivers
+Drivers = Computer model drivers, extract driver cab from the manufacturer and name the folder as the model name i.e. Latitude 5350
 
 Images = Windows image
 
