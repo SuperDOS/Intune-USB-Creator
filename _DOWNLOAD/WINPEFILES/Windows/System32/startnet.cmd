@@ -15,15 +15,6 @@ call |time>x:\starttime.txt
 @rem Initialize WinPE
 @echo wpeinit
 wpeinit
-@rem Load WinPE SYSTEM hive:
-Reg Load HKLM\WinPE "C:\WinPE\mount\Windows\System32\config\SYSTEM"
-@rem Show hidden files:
-  Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v Hidden /t REG_DWORD /d 1
-  Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v ShowSuperHidden /t REG_DWORD /d 1
-@rem Show file extensions:
-  Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v HideFileExt /t REG_DWORD /d 0
-@remUnload Hive:
-  Reg Unload HKLM\WinPE
 @echo.
 @echo.
 @echo.
