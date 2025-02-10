@@ -72,6 +72,7 @@ Publish-ImageToUSB.ps1 -createDataFolder
 (Needs to be run as administrator)
 
 This creates the WinPE boot image and extract Wim file from the Windows iso before creating the USB stick.
+The script will also download the latest powershell version and add the needed script files to the USB stick.
 After the creation of the DataFolder the _DATA folder will contain:
 
 **Drivers** = Computer model drivers, extract driver cab manually from the manufacturer and name the folder as the model name i.e. Latitude 5350
