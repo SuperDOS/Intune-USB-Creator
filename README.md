@@ -38,7 +38,7 @@ WinPE drivers
 
 **HP:** https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HP_WinPE_DriverPack.html
 
-If you want to use you own welcome banner you can use [https://www.asciiart.eu/text-to-ascii-art](https://www.asciiart.eu/text-to-ascii-art) and then encode it to base64
+If you want to use your own welcome banner you can use [https://www.asciiart.eu/text-to-ascii-art](https://www.asciiart.eu/text-to-ascii-art) and then encode it to base64
 
 ## Prepare Config
 The directory "_DOWNLOAD\WINPEFILES" contains files that will be added to the WinPE Boot image
