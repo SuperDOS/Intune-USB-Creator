@@ -633,7 +633,7 @@ try {
         else {
             $computerName = Read-Host -Prompt "Enter Computer Name"
         }
-        Set-AutopilotDevice -id $dev.id -displayName $computerName -groupTag "EIDPC"
+        Set-AutopilotDevice -id $dev.id -displayName $computerName -groupTag $groupTag
     }
 
     if (!$skipinstall) {
