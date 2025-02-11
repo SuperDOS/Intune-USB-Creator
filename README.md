@@ -22,6 +22,13 @@ This script prepares a bootable usb stick which can be used to image a computer 
 
 ## Optional
 
+Language Packs and Optional Features
+
+
+Copy the needed cabs from the Windows Language Packs and Optional Features and put them in _DATA\Packages
+
+[https://learn.microsoft.com/en-us/azure/virtual-desktop/windows-11-language-packs](https://learn.microsoft.com/en-us/azure/virtual-desktop/windows-11-language-packs)
+
 Computer model drivers 
 
 **Dell:** [https://www.dell.com/support/kbdoc/en-us/000124139/dell-command-deploy-driver-packs-for-enterprise-client-os-deployment](https://www.dell.com/support/kbdoc/en-us/000124139/dell-command-deploy-driver-packs-for-enterprise-client-os-deployment)
@@ -59,7 +66,7 @@ tenantid = Your Microsoft 365 Tenant ID
 
 iudwelcomebanner = Banner in Base64
 
-grouptag = GroupTag that will be used when register devices in Intune
+grouptag = GroupTag that will be used when register devices in Intune, great to use for dynamic groups
 
 windowsIsoPath = Path to Windows 10/11 iso
 
