@@ -48,24 +48,58 @@ else {
     $dataPath = $(Get-Item -Path ".\_DATA").FullName
 }
 
-#Get Download Path
-$downloadPath = (Get-Item ".\_DOWNLOAD").FullName
-
 #Import functions
-$Functions = @(Get-ChildItem -Path $PSScriptRoot\_FUNCTIONS\*.ps1 -ErrorAction SilentlyContinue)
-
-#Dot source the files
-foreach ($import in $Functions) {
-    try {
-        . $import.FullName
+try {
+    # Ensure the folder exists
+    $FunctionsFolder = Join-Path -Path $PSScriptRoot -ChildPath "_FUNCTIONS"
+    if (-not (Test-Path -Path $FunctionsFolder)) {
+        Write-Error "The folder '_FUNCTIONS' was not found at '$FunctionsFolder'."
     }
-    catch {
-        Write-Error -Message "Failed to import function $($import.FullName): $_"
+
+    # Get all PS1 files in the folder
+    $Functions = Get-ChildItem -Path $FunctionsFolder -Filter *.ps1
+    
+    # Import each function file
+    foreach ($Function in $Functions) {
+        . $Function.FullName
     }
 }
+catch {
+    Write-Error "Failed to import functions: $_"
+    exit 1
+}
 
-#Default Vars read values from JSON file
-$GlobalParamTable = Get-Content ("$PSScriptRoot\_GLOBAL_PARAM\GLOBAL_PARAM.json") | ConvertFrom-Json
+#Get Download Path
+$downloadPath = Join-Path -Path $PSScriptRoot -ChildPath "_DOWNLOAD" 
+if (-not (Test-Path -Path $downloadPath)) {
+    Write-Error "The folder '_DOWNLOAD' was not found at '$downloadPath'."
+    exit 1
+}
+
+if (!(Test-Admin)) {
+    Write-Error "Exiting -- need admin right to execute"
+    exit 1
+}
+
+
+# Load Global Parameters
+try {
+    $GlobalParamFilePath = Join-Path -Path $PSScriptRoot -ChildPath "_GLOBAL_PARAM\GLOBAL_PARAM.json"
+
+    # Check if the file exists before attempting to read it
+    if (-not (Test-Path -Path $GlobalParamFilePath -ErrorAction SilentlyContinue)) {
+        Write-Error "The global parameters file was not found at: '$GlobalParamFilePath'."
+        exit 1
+    }
+
+    # Read and parse the JSON file
+    $GlobalParamTable = Get-Content -Path $GlobalParamFilePath | ConvertFrom-Json
+}
+catch {
+    Write-Error "Failed to read or parse the global parameters file. Details: $_"
+    exit 1
+}
+
 # Get the list of properties
 $varNames = $GlobalParamTable.PSObject.Properties.name
     
@@ -144,7 +178,7 @@ if ($createDataFolder) {
 
         #These are needed for Intune USB Deployment
         $OptionalComponents = @("WinPE-WDS-Tools", "WinPE-Scripting", "WinPE-WMI", "WinPE-SecureStartup", "WinPE-NetFx", "WinPE-PowerShell", "WinPE-StorageWMI", "WinPE-DismCmdlets")
-
+        
         # Copy the winpe media
         copy-item -Path $winpemedia -Destination $pePath -Recurse -ErrorAction:Ignore
         new-item -Path $pePath -Name "sources" -ItemType Directory -ErrorAction:Ignore
@@ -196,29 +230,29 @@ if ($createDataFolder) {
                 $acl.SetOwner($adminAccount)
                 $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule($adminAccount, "FullControl", "Allow")
                 $acl.SetAccessRule($accessRule)
-                Set-Acl $destFilePath $acl
-                copy-item -Path $_.FullName -Destination $destFilePath -Force
+                Set-Acl $destFilePath $acl | Out-Null
+                copy-item -Path $_.FullName -Destination $destFilePath -Force | Out-Null
             }
             elseif (-not $_.PSIsContainer) {
-                copy-item -Path $_.FullName -Destination $destFilePath -Force
+                copy-item -Path $_.FullName -Destination $destFilePath -Force | Out-Null
             }
     
         }
   
         #Add registry keys
+        Write-Host "Modifying WinPE registry settings..." -ForegroundColor Yellow
         # Load WinPE SYSTEM hive:
-        Reg Load HKLM\WinPE "$peMount\Windows\System32\config\DEFAULT"
+        Reg Load HKLM\WinPE "$peMount\Windows\System32\config\DEFAULT" > $null 2>&1
 
         # Show hidden files:
-        Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v Hidden /t REG_DWORD /d 1 /f
-        Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v ShowSuperHidden /t REG_DWORD /d 1 /f
+        Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v Hidden /t REG_DWORD /d 1 /f > $null 2>&1
+        Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v ShowSuperHidden /t REG_DWORD /d 1 /f > $null 2>&1
 
         # Show file extensions:
-        Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v HideFileExt /t REG_DWORD /d 0 /f
+        Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v HideFileExt /t REG_DWORD /d 0 /f > $null 2>&1
 
         # Unload Hive:
-        Reg Unload HKLM\WinPE
-
+        Reg Unload HKLM\WinPE > $null 2>&1
 
         # Add the needed components to it
         foreach ($Component in $OptionalComponents) {
@@ -277,8 +311,17 @@ if ($createDataFolder) {
     #COPY Scripts Data
     copy-item -Path "$downloadPath\SCRIPT\*" -Destination $iuc.ScriptsPath -Recurse -ErrorAction:Ignore
 
-    # Read the content of the script
-    $scriptContent = Get-Content -Path "$($iuc.ScriptsPath)\Invoke-Provision.ps1" -Raw
+    # Define the main script file path
+    $scriptPath = Join-Path -Path $iuc.ScriptsPath -ChildPath "Invoke-Provision.ps1"
+
+    # Check if the file exists
+    if (-not (Test-Path -Path $scriptPath)) {
+        Write-Error "The file 'Invoke-Provision.ps1' does not exist at the specified path: $scriptPath"
+        exit 1
+    }
+
+    # Read the file content if it exists
+    $scriptContent = Get-Content -Path $scriptPath -Raw
 
     # Replace the placeholder values with the new values
     $scriptContent = $scriptContent.Replace("@GRAPHSECRET", [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($graphsecret)))
@@ -321,21 +364,6 @@ if ($createDataFolder) {
 
     #region download powershell
     try {
-
-        # Find Windows ISO Path
-        while (-not $windowsIsoPath -or -not (Test-Path -Path $windowsIsoPath.Trim('"') -ErrorAction:Ignore)) {
-            if (!$windowsIsoPath) {
-                $windowsIsoPath = $(Write-Host "Enter the path to the Windows ISO: " -ForegroundColor Yellow -NoNewLine; Read-Host)
-            }
-            else {
-                Write-Host "The path '$windowsIsoPath' does not exist. Please enter a valid path." -ForegroundColor Yellow
-                $windowsIsoPath = $(Write-Host "Enter the path to the Windows ISO: " -ForegroundColor Yellow -NoNewLine; Read-Host)
-            }
-        }
-
-        # Get the ISO size
-        $isosize = Get-Item -Path $windowsIsoPath.Trim('"')
-
         #Find latest Powershell Version
         $latestpwsh = Invoke-RestMethod -Uri "https://api.github.com/repos/powershell/powershell/releases/latest"
         $pwshPath = "$($iuc.ScriptsPath)\pwsh"
@@ -365,6 +393,24 @@ if ($createDataFolder) {
         $IUClog.pwshversion = ""
         $IUClog.pwshid = ""
     }
+    #endregion
+
+    #region get iso
+    # Find Windows ISO Path
+    while (-not $windowsIsoPath -or -not (Test-Path -Path $windowsIsoPath.Trim('"') -ErrorAction SilentlyContinue)) {
+        if (!$windowsIsoPath) {
+            Write-Host "Enter the path to the Windows ISO: " -ForegroundColor Yellow -NoNewLine
+            $windowsIsoPath = Read-Host
+        }
+        else {
+            Write-Host "The path '$windowsIsoPath' does not exist. Please enter a valid path." -ForegroundColor Red
+            Write-Host "Enter the path to the Windows ISO: " -ForegroundColor Yellow -NoNewLine
+            $windowsIsoPath = Read-Host
+        }
+    }
+
+    # Get the ISO size
+    $isosize = Get-Item -Path $windowsIsoPath.Trim('"')
     #endregion
 
     #region get wim and imageindex from ISO
@@ -457,10 +503,6 @@ try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $welcomebanner = "ICAgIOKWiOKWiOKVl+KWiOKWiOKWiOKVlyAgIOKWiOKWiOKVl+KWiOKWiOKWiOKWiOKWiOKWiOKWiOKWiOKVl+KWiOKWiOKVlyAgIOKWiOKWiOKVl+KWiOKWiOKWiOKVlyAgIOKWiOKWiOKVl+KWiOKWiOKWiOKWiOKWiOKWiOKWiOKVlyAgICAgCiAgICDilojilojilZHilojilojilojilojilZcgIOKWiOKWiOKVkeKVmuKVkOKVkOKWiOKWiOKVlOKVkOKVkOKVneKWiOKWiOKVkSAgIOKWiOKWiOKVkeKWiOKWiOKWiOKWiOKVlyAg4paI4paI4pWR4paI4paI4pWU4pWQ4pWQ4pWQ4pWQ4pWdICAgICAKICAgIOKWiOKWiOKVkeKWiOKWiOKVlOKWiOKWiOKVlyDilojilojilZEgICDilojilojilZEgICDilojilojilZEgICDilojilojilZHilojilojilZTilojilojilZcg4paI4paI4pWR4paI4paI4paI4paI4paI4pWXICAgICAgIAogICAg4paI4paI4pWR4paI4paI4pWR4pWa4paI4paI4pWX4paI4paI4pWRICAg4paI4paI4pWRICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4pWR4pWa4paI4paI4pWX4paI4paI4pWR4paI4paI4pWU4pWQ4pWQ4pWdICAgICAgIAogICAg4paI4paI4pWR4paI4paI4pWRIOKVmuKWiOKWiOKWiOKWiOKVkSAgIOKWiOKWiOKVkSAgIOKVmuKWiOKWiOKWiOKWiOKWiOKWiOKVlOKVneKWiOKWiOKVkSDilZrilojilojilojilojilZHilojilojilojilojilojilojilojilZcgICAgIAogICAg4pWa4pWQ4pWd4pWa4pWQ4pWdICDilZrilZDilZDilZDilZ0gICDilZrilZDilZ0gICAg4pWa4pWQ4pWQ4pWQ4pWQ4pWQ4pWdIOKVmuKVkOKVnSAg4pWa4pWQ4pWQ4pWQ4pWd4pWa4pWQ4pWQ4pWQ4pWQ4pWQ4pWQ4pWdICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAg4paI4paI4pWXICAg4paI4paI4pWX4paI4paI4paI4paI4paI4paI4paI4pWX4paI4paI4paI4paI4paI4paI4pWXICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICDilojilojilZEgICDilojilojilZHilojilojilZTilZDilZDilZDilZDilZ3ilojilojilZTilZDilZDilojilojilZcgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4paI4paI4paI4paI4paI4pWX4paI4paI4paI4paI4paI4paI4pWU4pWdICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgIOKWiOKWiOKVkSAgIOKWiOKWiOKVkeKVmuKVkOKVkOKVkOKVkOKWiOKWiOKVkeKWiOKWiOKVlOKVkOKVkOKWiOKWiOKVlyAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICDilZrilojilojilojilojilojilojilZTilZ3ilojilojilojilojilojilojilojilZHilojilojilojilojilojilojilZTilZ0gICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgIOKVmuKVkOKVkOKVkOKVkOKVkOKVnSDilZrilZDilZDilZDilZDilZDilZDilZ3ilZrilZDilZDilZDilZDilZDilZ0gICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAog4paI4paI4paI4paI4paI4paI4pWX4paI4paI4paI4paI4paI4paI4pWXIOKWiOKWiOKWiOKWiOKWiOKWiOKWiOKVlyDilojilojilojilojilojilZcg4paI4paI4paI4paI4paI4paI4paI4paI4pWXIOKWiOKWiOKWiOKWiOKWiOKWiOKVlyDilojilojilojilojilojilojilZcgCuKWiOKWiOKVlOKVkOKVkOKVkOKVkOKVneKWiOKWiOKVlOKVkOKVkOKWiOKWiOKVl+KWiOKWiOKVlOKVkOKVkOKVkOKVkOKVneKWiOKWiOKVlOKVkOKVkOKWiOKWiOKVl+KVmuKVkOKVkOKWiOKWiOKVlOKVkOKVkOKVneKWiOKWiOKVlOKVkOKVkOKVkOKWiOKWiOKVl+KWiOKWiOKVlOKVkOKVkOKWiOKWiOKVlwrilojilojilZEgICAgIOKWiOKWiOKWiOKWiOKWiOKWiOKVlOKVneKWiOKWiOKWiOKWiOKWiOKVlyAg4paI4paI4paI4paI4paI4paI4paI4pWRICAg4paI4paI4pWRICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4paI4paI4paI4paI4pWU4pWdCuKWiOKWiOKVkSAgICAg4paI4paI4pWU4pWQ4pWQ4paI4paI4pWX4paI4paI4pWU4pWQ4pWQ4pWdICDilojilojilZTilZDilZDilojilojilZEgICDilojilojilZEgICDilojilojilZEgICDilojilojilZHilojilojilZTilZDilZDilojilojilZcK4pWa4paI4paI4paI4paI4paI4paI4pWX4paI4paI4pWRICDilojilojilZHilojilojilojilojilojilojilojilZfilojilojilZEgIOKWiOKWiOKVkSAgIOKWiOKWiOKVkSAgIOKVmuKWiOKWiOKWiOKWiOKWiOKWiOKVlOKVneKWiOKWiOKVkSAg4paI4paI4pWRCiDilZrilZDilZDilZDilZDilZDilZ3ilZrilZDilZ0gIOKVmuKVkOKVneKVmuKVkOKVkOKVkOKVkOKVkOKVkOKVneKVmuKVkOKVnSAg4pWa4pWQ4pWdICAg4pWa4pWQ4pWdICAgIOKVmuKVkOKVkOKVkOKVkOKVkOKVnSDilZrilZDilZ0gIOKVmuKVkOKVnQ=="
     Write-Host `n$([system.text.encoding]::UTF8.GetString([system.convert]::FromBase64String($welcomebanner)))
-
-    if (!(Test-Admin)) {
-        throw "Exiting -- need admin right to execute"
-    }
 
     #endregion
     #region set usb class
