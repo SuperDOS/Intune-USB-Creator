@@ -1,4 +1,6 @@
 ## Summary
+This script prepares a bootable usb drive which can be used to image a computer with Windows.
+
 This is an update of Powers-hells module https://github.com/tabs-not-spaces/Intune.USB.Creator
 
 Read more about it here
@@ -8,7 +10,36 @@ Works for Windows 11 and added function to register hardware hash in winpe via m
 
 Logic for extraction of autopilot hash: [https://mikemdm.de/2023/01/29/can-you-create-a-autopilot-hash-from-winpe-yes/](https://mikemdm.de/2023/01/29/can-you-create-a-autopilot-hash-from-winpe-yes/)
 
-This script prepares a bootable usb stick which can be used to image a computer with Windows.
+## What does it do?
+When booting up the USB Intune Deployment it will look up the USB drive and setup all the drive letters needed
+
+It will then look for any WinPE drivers under Drivers\WinPE and load them
+
+Then a menu will be shown what you want to do
+
+- Install Windows
+- Install Windows and Register Autopilot
+- Register Autopilot
+
+If you choose Install Windows and Register Autopilot it will extract the hardware hash with OA3.tool and typ to upload it via graph to Intune
+
+After it has succeded it will prompt to enter a device name
+
+If you look under Intune/Windows Enrollment/Devices it will be updated there
+
+![image](https://github.com/user-attachments/assets/9710580e-2429-4ff4-a7f2-e49f49730f83)
+
+It will proceed and format the computer's drive and partition it, if there's storage drivers for the detected model it will be injected to the windows recovery image.
+
+If there's a unattented.xml and ppkg files under the scripts folder it will be copied as well
+
+Public shortcuts will be removed
+
+Computer specific drivers will be added to the installation
+
+Any Packages like language packs will be added
+
+Done!
 
 ## Pre-Reqs
 
@@ -78,11 +109,11 @@ Publish-ImageToUSB.ps1 -createDataFolder
 ```
 (Needs to be run as administrator)
 
-This creates the WinPE boot image and extract Wim file from the Windows iso before creating the USB stick.
-The script will also download the latest powershell version and add the needed script files to the USB stick.
+This creates the WinPE boot image and extract Wim file from the Windows iso before creating the USB drive.
+The script will also download the latest powershell version and add the needed script files to the USB drive.
 After the creation of the DataFolder the _DATA folder will contain:
 
-**Drivers** = Computer model drivers, extract driver cab manually from the manufacturer and name the folder as the model name i.e. Latitude 5350
+**Drivers** = Computer model drivers, extract driver cab manually from the manufacturer and name the folder as the model name i.e. Latitude 5350, if you need to add a driver to WinPE after creating the drive you can add a folder here name WinPE and i will load these drivers before starting
 
 **Images** = Windows Wim image
 
