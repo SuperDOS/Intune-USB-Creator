@@ -25,10 +25,10 @@
   If you want to use you own welcome banner you can use [https://www.asciiart.eu/text-to-ascii-art](https://www.asciiart.eu/text-to-ascii-art) and then encode it to base64
   
 .NOTES
-  Version:        0.1
+  Version:        0.2
   Credits:        SuperDOS / Ben R. / CloudOSD
   Creation Date:  2025-02-24
-  Purpose/Change: First complete version
+  Purpose/Change: Supports Multienant and added more error handling
 .EXAMPLE
   .\Publish-ImageToUSB.ps1
 #>
@@ -141,6 +141,7 @@ if ($createDataFolder) {
         }
         else {
             $buildwinpemedia = $true
+            Remove-item -Path $pePath -Recurse -Force
         }
     }
     else {
@@ -150,7 +151,6 @@ if ($createDataFolder) {
     if ($buildwinpemedia) {
            
         #region Get Windows ADK information from the Registry - Credits CloudOSD
-
         $InstalledRoots = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots'
         $RegistryValue = 'KitsRoot10'
         $KitsRoot10 = $null
@@ -260,14 +260,16 @@ if ($createDataFolder) {
             "Adding $Component"
             Add-WindowsPackage -Path $peMount -PackagePath $Path
         }
-
+        
         # Inject any needed drivers
         if ($(Test-IsDirectoryEmpty $winPEdrivers)) {
+             "Adding Drivers..."
             Add-WindowsDriver -Path $peMount -Driver $winPEdrivers -Recurse
         }
 
         # Inject any needed update
         if ($(Test-IsDirectoryEmpty $winPEupdates)) {
+            "Adding Updates..."
             Get-ChildItem $winPEupdates | ForEach-Object { 
                 Add-WindowsPackage -Path $peMount -PackagePath $_.FullName
             }
@@ -322,13 +324,10 @@ if ($createDataFolder) {
 
     # Read the file content if it exists
     $scriptContent = Get-Content -Path $scriptPath -Raw
-
+    
     # Replace the placeholder values with the new values
-    $scriptContent = $scriptContent.Replace("@GRAPHSECRET", [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($graphsecret)))
-    $scriptContent = $scriptContent.Replace("@GRAPHCLIENTID", [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($graphclientid)))
-    $scriptContent = $scriptContent.Replace("@TENANTID", [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($tenantid)))
+    $scriptContent = $scriptContent.Replace("@TENANT", [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($tenant | ConvertTo-Json -Compress))))
     $scriptContent = $scriptContent.Replace("@WELCOMEBANNER", $iudwelcomebanner)
-    $scriptContent = $scriptContent.Replace("@GROUPTAG", $grouptag)
 
     # Save the updated content back to the script
     Set-Content -Path "$($iuc.ScriptsPath)\Invoke-Provision.ps1" -Value $scriptContent
