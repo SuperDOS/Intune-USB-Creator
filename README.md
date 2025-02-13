@@ -89,20 +89,39 @@ The directory "_DOWNLOAD\WINPEFILES" contains files that will be added to the Wi
 
 **_GLOBAL_PARAM\GLOBAL_PARAM.JSON**
 
-graphsecret = clientsecret from the enterprise app
+It's possible to configure multiple tenants, if more than one tenant is configured you will be prompted which tenant to use
 
-graphclientid = application client id from the enterprise app
-
-tenantid = Your Microsoft 365 Tenant ID
-
-iudwelcomebanner = Banner in Base64
-
-grouptag = GroupTag that will be used when register devices in Intune, great to use for dynamic groups
-
-windowsIsoPath = Path to Windows 10/11 iso
-
-imageIndex = windows wim image index
-
+``` JSON
+{
+  "tenant": [
+    {
+      "id": "Microsoft 365 Tenant ID 1",
+      "name": "tenant1.com",
+      "grouptag": "GROUP TAG 1",
+      "graphsecret": "Enterise App Client Secret 1",
+      "graphclientid": "Enterise App Application ID 1"
+    },
+    {
+      "id": "Microsoft 365 Tenant ID 2",
+      "name": "tenant2.com",
+      "grouptag": "GROUP TAG 2",
+      "graphsecret": "Enterise App Client Secret 2",
+      "graphclientid": "Enterise App Application ID 2"
+    },
+    {
+      "id": "Microsoft 365 Tenant ID 3",
+      "name": "tenant3.com",
+      "grouptag": "GROUP TAG 3",
+      "graphsecret": "Enterise App Client Secret 3",
+      "graphclientid": "Enterise App Application ID 3"
+    }
+  ],
+  "iudwelcomebanner":"Banner in Base64",
+  "windowsIsoPath": "C:\\Temp\\Windows.iso",
+  "imageIndex": 3,
+  "iucversion": 1.0
+}
+```
 ## How to use
 ``` PowerShell
 Publish-ImageToUSB.ps1 -createDataFolder
