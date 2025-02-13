@@ -1,9 +1,6 @@
 #region variables set by Publish-ImageToUSB.ps1 -createDataFolder from the GLOBAL_PARAM.json
-$graphsecret = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("@GRAPHSECRET"))
-$graphclientid = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("@GRAPHCLIENTID"))
-$tenantid = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("@TENANTID"))
+$tenants = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($("@TENANT"))) | ConvertFrom-Json
 $welcomebanner = "@WELCOMEBANNER"
-$groupTag = "@GROUPTAG"
 #end region
 
 #region Classes
@@ -462,46 +459,90 @@ function Add-Package {
         Invoke-Cmdline -application "DISM" -argumentList "/Image:$scratchDrive /Add-Package /PackagePath:$packagePath /ScratchDir:$scratchPath"
     }
 }
+
 function Show-WarningShots {
-    [cmdletbinding()]
+    [CmdletBinding()]
     param (
         [string]$title = 'Choose an option'
     )
-    Write-Host "================ $title ================" -ForegroundColor Yellow
 
-    Write-Host "1: Exit" -ForegroundColor Green
-    Write-Host "2: Install Windows 11" -ForegroundColor Green
-    Write-Host "3: Install Windows 11 and Register Autopilot" -ForegroundColor Green
-    Write-Host "4: Register Autopilot" -ForegroundColor Green
+    do {
+        Write-Host "================ $title ================" -ForegroundColor Yellow
 
-    $userInput = Read-Host "Please make a selection..."
-    return $userInput
+        Write-Host "1: Exit" -ForegroundColor Green
+        Write-Host "2: Install Windows 11" -ForegroundColor Green
+        Write-Host "3: Install Windows 11 and Register Autopilot" -ForegroundColor Green
+        Write-Host "4: Register Autopilot" -ForegroundColor Green
+
+        $userInput = Read-Host "`nEnter a number (1-4)"
+
+        # Validate input: Ensure it is a number between 1 and 4
+        if ($userInput -match '^[1-4]$') {
+            return [int]$userInput
+        }
+
+        Write-Host "`nInvalid selection. Please enter a number between 1 and 4." -ForegroundColor Red
+        Start-Sleep -Seconds 2  # Pause briefly before retrying
+
+    } while ($true)  # Keep looping until valid input is given
 }
-function Show-FinalWarningShots {
+
+
+
+function Show-TenantSelection {
     [cmdletbinding()]
+    param (
+        $tenants
+    )
+
+    Write-Host "================ Choose a Tenant ================" -ForegroundColor Yellow
+
+    # Display tenants with numbers
+    for ($i = 0; $i -lt $tenants.Count; $i++) {
+        Write-Host "$($i + 1): $($tenants[$i].name) ($($tenants[$i].id))" -ForegroundColor Green
+    }
+
+    # Validate user input
+    do {
+        $userInput = Read-Host "Please enter a number (1-$($tenants.Count))"
+        $isValid = $userInput -match "^\d+$" -and [int]$userInput -ge 1 -and [int]$userInput -le $tenants.Count
+
+        if (-not $isValid) {
+            Write-Host "Invalid selection, please enter a valid number." -ForegroundColor Red
+        }
+    } while (-not $isValid)
+
+    # Return the selected tenant object
+    return $tenants[[int]$userInput - 1]
+}
+
+function Show-FinalWarningShots {
+    [CmdletBinding()]
     param (
         [string]$title = 'WARNING!!!'
     )
-    Write-Host "================ $title ================" -ForegroundColor RED
 
-    Write-Host "This option will cause irreversible changes to your device - are you sure you want to continue? (Y/N)`n" -ForegroundColor Red
+    do {
+        Clear-Host
+        Write-Host "================ $title ================" -ForegroundColor Red
+        Write-Host "`nThis option will cause irreversible changes to your device!" -ForegroundColor Red
+        Write-Host "Are you sure you want to continue? (Y/N)`n" -ForegroundColor Yellow
 
-    $userInput = Read-Host "Please make a selection (Y/N)"
+        $userInput = Read-Host "Please make a selection (Y/N)"
+        $userInput = $userInput.Trim().ToUpper()  # Normalize input
 
-    switch ($userInput) {
-        "Y" {
-            return $true
+        switch ($userInput) {
+            "Y" { return $true }
+            "N" { return $false }
         }
-        "N" {
-            return $false
-        }
-        default {
-            Clear-Host
-            Show-FinalWarningShots
-        }
-    }
-    return $input
+
+        # If invalid input, show a warning and loop again
+        Write-Host "`nInvalid selection. Please enter 'Y' or 'N'." -ForegroundColor Yellow
+        Start-Sleep -Seconds 2  # Pause briefly before retrying
+
+    } while ($true)  # Infinite loop until valid input
 }
+
 #endregion
 #region Main process
 try {
@@ -527,15 +568,32 @@ try {
     #region Set power policy to High Performance
     Set-PowerPolicy -powerPlan HighPerformance
     #endregion
-    
+
     #region Warning shots..
-    $userChoice = $null
-    while ($userChoice -notin 1, 2, 3, 4) {
-        Clear-Host
-        Write-Host $([system.text.encoding]::UTF8.GetString([system.convert]::FromBase64String($welcomebanner)))
-        Start-Sleep -Seconds 2
-        $userChoice = Show-WarningShots
+    Clear-Host
+    Write-Host $([system.text.encoding]::UTF8.GetString([system.convert]::FromBase64String($welcomebanner)))
+
+    #region Tenant selection
+    if ($tenants.Count -gt 1) {
+        $tenant = Show-TenantSelection -tenants $tenants
+        $tenantid = $tenant.id
+        $groupTag = $tenant.groupTag
+        $graphclientid = $tenant.graphclientid
+        $graphsecret = $tenant.graphsecret
     }
+    else {
+        $tenantid = $tenants[0].id
+        $groupTag = $tenants[0].groupTag
+        $graphclientid = $tenants[0].graphclientid
+        $graphsecret = $tenants[0].graphsecret
+    }
+    #endregion
+      
+    # Directly get a valid user choice (Show-WarningShots ensures valid input)
+    Clear-Host
+    Write-Host $([system.text.encoding]::UTF8.GetString([system.convert]::FromBase64String($welcomebanner)))
+    $userChoice = Show-WarningShots  
+    
     switch ($userChoice) {
         1 {
             $exitEarly = $true
@@ -562,17 +620,12 @@ try {
             }
         }
         4 {
-            $finalWarning = $true
-            if ($finalWarning) {
-                $skipinstall = $true
-                $autoPilot = $true
-            }
-            else {
-                $exitEarly = $true
-                throw "Stopping device provision.."
-            }
+            # No need to check $finalWarning since it was always set to $true
+            $skipinstall = $true
+            $autoPilot = $true
         }
     }
+    
     #endregion
     if ($autoPilot) {
         $computerName = $null
@@ -633,6 +686,7 @@ try {
         else {
             $computerName = Read-Host -Prompt "Enter Computer Name"
         }
+        Start-Sleep 2
         Set-AutopilotDevice -id $dev.id -displayName $computerName -groupTag $groupTag
     }
 
