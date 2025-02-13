@@ -117,7 +117,7 @@ It's possible to configure multiple tenants, if more than one tenant is configur
     }
   ],
   "iudwelcomebanner":"Banner in Base64",
-  "windowsIsoPath": "C:\\Temp\\Windows.iso",
+  "windowsIsoPath": "Path to Windows ISO i.g. C:\\Temp\\Windows.iso",
   "imageIndex": 3,
   "iucversion": 1.0
 }
