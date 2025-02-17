@@ -21,7 +21,7 @@ Then a menu will be shown what you want to do
 - Install Windows and Register Autopilot
 - Register Autopilot
 
-If you choose Install Windows and Register Autopilot it will extract the hardware hash with OA3.tool and typ to upload it via graph to Intune
+If you choose Install Windows and Register Autopilot it will extract the hardware hash with OA3.tool and try to upload it via graph to Intune
 
 After it has succeded it will prompt to enter a device name
 
