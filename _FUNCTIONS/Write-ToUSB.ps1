@@ -7,6 +7,8 @@ function Write-ToUSB {
         [parameter(Mandatory = $true)]
         $destination
     )
+    
+    $objShell = $null
     try {
         $progressDiag = "&H0&"
         $yesToAll = "&H16&"
@@ -20,6 +22,9 @@ function Write-ToUSB {
         $errorMsg = $_
     }
     finally {
+        if ($objShell) {
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($objShell) | Out-Null
+        }
         if ($errorMsg) {
             Write-Host "`n"
             Write-Warning $errorMsg
