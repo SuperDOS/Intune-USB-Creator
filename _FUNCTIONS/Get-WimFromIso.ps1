@@ -14,15 +14,21 @@ function Get-WimFromIso {
             if (!(Test-Path $wimDestination -ErrorAction SilentlyContinue)) {
                 New-Item -Path $wimDestination -ItemType Directory -Force | Out-Null
             }
-           # Invoke-FileTransfer -source "$($volume.DriveLetter)`:\sources\install.wim" -destination "$wimDestination\install.wim"
-           Copy-Item -Path "$($volume.DriveLetter)`:\sources\install.wim" -Destination "$wimDestination\install.wim"
+            Copy-Item -Path "$($volume.DriveLetter)`:\sources\install.wim" -Destination "$wimDestination\install.wim"
         }
     }
     catch {
         Write-Warning $_
     }
     finally {
-        Dismount-DiskImage -ImagePath $isoPath | Out-Null
-        Write-Host $([char]0x221a) -ForegroundColor Green
+        if ($mount) {
+            try {
+                Dismount-DiskImage -ImagePath $isoPath -ErrorAction Stop | Out-Null
+                Write-Host $([char]0x221a) -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "Failed to dismount ISO: $_"
+            }
+        }
     }
 }
