@@ -13,18 +13,23 @@ function Test-IsDirectoryEmpty {
             $dir.Refresh()
 
             if (!$dir.Exists) {
-                Write-Warning ("'{0}' directory not found. Skipping..." -f $dir.FullName)
+                Write-Warning ("'{0}' directory not found." -f $dir.FullName)
                 continue
             }
 
             $isEmpty = $true
             try {
-                foreach ($subDir in $dir.EnumerateDirectories('*', [IO.SearchOption]::AllDirectories)) {
-                    Write-Verbose ("Checking '{0}' sub directory." -f $subDir.FullName)
-
-                    if (@($subDir.EnumerateFiles()).Count) {
-                        $isEmpty = $false
-                        break
+                # Check files in root directory first
+                if (@($dir.EnumerateFiles()).Count -gt 0) {
+                    $isEmpty = $false
+                }
+                else {
+                    # Check subdirectories
+                    foreach ($subDir in $dir.EnumerateDirectories('*', [IO.SearchOption]::AllDirectories)) {
+                        if (@($subDir.EnumerateFiles()).Count) {
+                            $isEmpty = $false
+                            break
+                        }
                     }
                 }
             }
