@@ -10,14 +10,27 @@ function Get-DiskToUse {
         $table = $disks | Format-Table | Out-Host
         $diskNum = Read-Host -Prompt "$table`Please select Desired disk number for USB creation or CTRL+C to cancel"
     }
-    while ($diskNum -lt 0 -or $diskNum -notin $diskList.Number) {
-        if ($Disks[$diskNum].'TotalSize(GB)' -lt 8) {
-            Write-Host "I am afraid not, that disk is less than 8Gb and we just wont have the space. Please use a larger disk"
-            $diskNum = Read-Host -Prompt "$table`Please select Desired disk number for USB creation or CTRL+C to cancel"
+    while ($true) {
+        # Validate disk number is in list
+        if ($diskNum -notin $diskList.Number) {
+            Write-Host "Invalid disk number. Please select from the list." -ForegroundColor Red
+            $diskNum = Read-Host -Prompt "Please select Desired disk number for USB creation or CTRL+C to cancel"
+            continue
         }
-        else {
-            $diskNum = Read-Host -Prompt "$table`Please select Desired disk number for USB creation or CTRL+C to cancel"
+    
+        # Get the actual disk object
+        $selectedDisk = $diskList | Where-Object { $_.Number -eq $diskNum }
+        $sizeGB = [math]::Round($selectedDisk.Size / 1GB, 2)
+    
+        # Validate size
+        if ($sizeGB -lt 8) {
+            Write-Host "That disk is only $sizeGB GB. Please use a disk with at least 8GB." -ForegroundColor Red
+            $diskNum = Read-Host -Prompt "Please select Desired disk number for USB creation or CTRL+C to cancel"
+            continue
         }
+    
+        # Valid selection
+        break
     }
     return $diskNum
 }
