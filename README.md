@@ -62,7 +62,7 @@ When using `-useWinRE`, add these parameters to `_GLOBAL_PARAM\GLOBAL_PARAM.json
 {
   "wifissid": "YourWiFiNetworkName",
   "wifipwd": "YourWiFiPassword",
-  "wifisec": "WPA2PSK"
+  "wifisecuritytype": "WPA2PSK"
 }
 ```
 WiFi will automatically connect at boot, allowing wireless deployment without Ethernet cable.
