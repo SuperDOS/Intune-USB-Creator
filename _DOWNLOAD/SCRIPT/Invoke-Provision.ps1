@@ -1,1029 +1,1014 @@
 <#
 .SYNOPSIS
-  Creates Bootable USB stick with Intune USB Deployment
+    Intune USB Deployment - Provision Script
 .DESCRIPTION
-  Will format and write the needed data to a USB stick
-  #Instructions
-  Before creating a USB stick you need to run Publish-ImageToUSB.ps1 -createDataFolder to prepare all the data to be written.
-  If want to add drivers or packages like language packs you will need to add them to the folders In the folder _DATA folder
-  Drivers = Computer model drivers, extract driver cab from the manufacturer and name the folder as the model name i.e. Latitude 5350
-  Packages = Windows packages, i.e. language packs, dotnet 3.5
-  To be able to create WINPE boot media download adkwinpesetup.exe from https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install and install it
-  
-  If you need winpe drivers for certain machines you can download them from the manufacturer
-  Dell: https://www.dell.com/support/kbdoc/en-us/000107478/dell-command-deploy-winpe-driver-packs
-  Lenovo: https://support.lenovo.com/us/en/solutions/ht074984-microsoft-system-center-configuration-manager-sccm-and-microsoft-deployment-toolkit-mdt-package-index
-  HP: https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HP_WinPE_DriverPack.html
-  
-  These need to be added to _DOWNLOAD\WINPEDRIVERS
-  
-  You also will need to get a Windows 11 iso for extraction of install.wim, path to the iso can be defined in GLOBAL_PARAM.json if not you will be prompted.
-  This script will download latest powershell
-  
-  In the \_GLOBAL_PARAM\GLOBAL_PARAM.json you will need do define infromation from your enterprise app  GraphSecret, GraphClientID, TenantID
-  Optional is to define the USB-welcomescreen which is the banner that is shown when the Intune USB Deployment is starting
-  If you want to use you own welcome banner you can use [https://www.asciiart.eu/text-to-ascii-art](https://www.asciiart.eu/text-to-ascii-art) and then encode it to base64
-  
-  For WiFi support with WinRE (when using -useWinRE), configure these optional parameters in GLOBAL_PARAM.json:
-  - wifissid: Your WiFi network SSID
-  - wifipwd: Your WiFi network password
-  - wifisecuritytype: Your WiFi security type (e.g. WPA2PSK, WPA3SAE)
-  WiFi configuration is automatically applied when using WinRE boot media.
-  
-.PARAMETER createDataFolder
-  Prepares the data folder with WinPE/WinRE customizations before creating the USB stick
-.PARAMETER force
-  Forces rebuild of WinPE media and re-extraction of files even if they already exist
-.PARAMETER useWinRE
-  Extract and use WinRE.wim from the Windows install.wim instead of using WinPE.wim from ADK.
-  WinRE will be extracted from the same image index specified in GLOBAL_PARAM.json
-  
+    Provisions a device with Windows installation and/or Autopilot registration
 .NOTES
-  Version:       1.0
-  Credits:        SuperDOS / Ben R. / CloudOSD
-  Creation Date:  2026-02-09
-  Purpose/Change: Added WinRE support as alternative to WinPE
-.EXAMPLE
-  .\Publish-ImageToUSB.ps1 -createDataFolder
-  Creates the data folder using default WinPE from Windows ADK
-.EXAMPLE
-  .\Publish-ImageToUSB.ps1 -createDataFolder -useWinRE
-  Creates the data folder using WinRE.wim extracted from the Windows install.wim
-.EXAMPLE
-  .\Publish-ImageToUSB.ps1
-  Creates the USB stick from previously prepared data
+    Version: 1.0
 #>
-[CmdletBinding(PositionalBinding = $false)]
-param (
-    [Parameter(Mandatory = $false)][switch]$createDataFolder,
-    [Parameter(Mandatory = $false)][switch]$force,
-    [Parameter(Mandatory = $false)][switch]$useWinRE
-)
 
-#Region Start Block
+#region variables set by Publish-ImageToUSB.ps1 -createDataFolder from the GLOBAL_PARAM.json
+$tenants = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($("@TENANT"))) | ConvertFrom-Json
+$welcomebanner = "@WELCOMEBANNER"
+$script:GraphTokenCache = @{}
+#endregion
 
-#Create dataPath
-if (-not (Test-Path ".\_DATA")) {
-    $dataPath = (New-Item ".\_DATA" -ItemType Directory).FullName
-}
-else {
-    $dataPath = $(Get-Item -Path ".\_DATA").FullName
-}
+#region Classes
+class USBImage {
+    [string]$winPEDrive
+    [string]$winPESource = $env:winPESource
+    [PSCustomObject]$volumeInfo
+    [string]$installPath
+    [string]$installRoot
+    [System.IO.DirectoryInfo]$scratch
+    [string]$scRoot
+    [System.IO.DirectoryInfo]$recovery
+    [string]$reRoot
+    [System.IO.DirectoryInfo]$driverPath
+    [System.IO.DirectoryInfo]$packagePath
 
-#Import functions
-try {
-    # Ensure the folder exists
-    $FunctionsFolder = Join-Path -Path $PSScriptRoot -ChildPath "_FUNCTIONS"
-    if (-not (Test-Path -Path $FunctionsFolder)) {
-        Write-Error "The folder '_FUNCTIONS' was not found at '$FunctionsFolder'."
-    }
-
-    # Get all PS1 files in the folder
-    $Functions = Get-ChildItem -Path $FunctionsFolder -Filter *.ps1
-    
-    # Import each function file
-    foreach ($Function in $Functions) {
-        . $Function.FullName
-    }
-}
-catch {
-    Write-Error "Failed to import functions: $_"
-    exit 1
-}
-
-#Get Download Path
-$downloadPath = Join-Path -Path $PSScriptRoot -ChildPath "_DOWNLOAD" 
-if (-not (Test-Path -Path $downloadPath)) {
-    Write-Error "The folder '_DOWNLOAD' was not found at '$downloadPath'."
-    exit 1
-}
-
-if (!(Test-Admin)) {
-    Write-Error "Exiting -- need admin right to execute"
-    exit 1
-}
-
-
-# Load Global Parameters
-try {
-    $GlobalParamFilePath = Join-Path -Path $PSScriptRoot -ChildPath "_GLOBAL_PARAM\GLOBAL_PARAM.json"
-
-    # Check if the file exists before attempting to read it
-    if (-not (Test-Path -Path $GlobalParamFilePath -ErrorAction SilentlyContinue)) {
-        Write-Error "The global parameters file was not found at: '$GlobalParamFilePath'."
-        exit 1
-    }
-
-    # Read and parse the JSON file
-    $GlobalParamTable = Get-Content -Path $GlobalParamFilePath | ConvertFrom-Json
-}
-catch {
-    Write-Error "Failed to read or parse the global parameters file. Details: $_"
-    exit 1
-}
-
-# Get the list of properties
-$varNames = $GlobalParamTable.PSObject.Properties.name
-    
-# For each property, create a var with its name and corresponding value
-ForEach ($variable in $varNames) {
-    New-Variable -Name $variable -Value $GlobalParamTable.$variable -Force
-}
-
-#Endregion
-
-#region Validate and load deployment share for USB creation
-if (!$createDataFolder) {
-    # Check if data folder exists and is not empty
-    if ($(Test-IsDirectoryEmpty $dataPath).IsEmpty -eq $true) {
-        Write-Host "`nNo Intune USB Creator Data Found" -ForegroundColor Red
-        Write-Host "Please run: .\Publish-ImageToUSB.ps1 -createDataFolder" -ForegroundColor Yellow
-        Return
+    USBImage ([string]$winPEDrive) {
+        $this.winPEDrive = $winPEDrive
+        $this.volumeInfo = Get-DiskPartVolume -WinPEDrive $winPEDrive
+        $this.installRoot = (Find-InstallWim -VolumeInfo $this.volumeInfo).DriveRoot
+        $this.installPath = "$($this.installRoot)images"
+        $this.driverPath = "$($this.installRoot)Drivers"
+        $this.packagePath = "$($this.installRoot)Packages"
     }
     
-    # Load deployment metadata
-    Write-Host "`n=== Loading Deployment Configuration ===" -ForegroundColor Magenta
-    
-    $iucLogPath = Join-Path $dataPath "IUC-log.json"
-    if (Test-Path $iucLogPath) {
-        try {
-            $IUClog = Get-Content -Path $iucLogPath | ConvertFrom-Json -Depth 20
-            
-            # Determine deployment type
-            if ($IUClog.PSObject.Properties.Match('deploymentType') -and $IUClog.deploymentType) {
-                $useWinREImage = ($IUClog.deploymentType -eq "WinRE")
-                
-                Write-Host "Deployment Type: $($IUClog.deploymentType)" -ForegroundColor Cyan
-                if ($IUClog.imageindex) {
-                    Write-Host "Windows Edition: Index $($IUClog.imageindex)" -ForegroundColor Cyan
-                }
-                if ($IUClog.winversion) {
-                    Write-Host "Version: $($IUClog.winversion)" -ForegroundColor Cyan
-                }
-                Write-Host "Built: $($IUClog.installdate)" -ForegroundColor Cyan
-            }
-            else {
-                # Legacy deployment (before deploymentType was added)
-                Write-Warning "Legacy deployment detected (no type metadata)"
-                Write-Warning "Assuming WinPE deployment"
-                $useWinREImage = $false
-            }
-        }
-        catch {
-            Write-Error "Failed to load deployment metadata: $_"
-            Write-Error "Deployment share may be corrupted"
-            Return
-        }
-    }
-    else {
-        Write-Error "Deployment metadata not found: $iucLogPath"
-        Write-Error "Please rebuild deployment share with -createDataFolder"
-        Return
+    [void] SetScratch([System.IO.DirectoryInfo]$scratch) {
+        $this.scratch = $scratch
+        $this.scRoot = $scratch.Root
     }
     
-    # Validate required files
-    Write-Host "`nValidating deployment files..." -ForegroundColor Cyan
-    
-    $requiredFiles = @(
-        @{ Path = "WinPE\sources\boot.wim"; Name = "Boot image" },
-        @{ Path = "Images\install.wim"; Name = "Windows install image" },
-        @{ Path = "WinPE\Scripts\Invoke-Provision.ps1"; Name = "Deployment script" },
-        @{ Path = "WinPE\Scripts\Main.cmd"; Name = "Startup script" }
-    )
-    
-    $missingFiles = @()
-    foreach ($file in $requiredFiles) {
-        $fullPath = Join-Path $dataPath $file.Path
-        if (-not (Test-Path $fullPath)) {
-            $missingFiles += $file
-        }
-    }
-    
-    if ($missingFiles.Count -gt 0) {
-        Write-Error "`nDeployment share is incomplete! Missing files:"
-        $missingFiles | ForEach-Object { Write-Error "  - $($_.Name): $($_.Path)" }
-        Write-Error "`nPlease rebuild: .\Publish-ImageToUSB.ps1 -createDataFolder"
-        Return
-    }
-    
-    Write-Host "All required files present" -ForegroundColor Green
-    
-    # Configure WiFi if this is a WinRE deployment
-    if ($useWinREImage) {
-        Write-Host "`nConfiguring WiFi for WinRE deployment..." -ForegroundColor Cyan
-        
-        $scriptsPath = Join-Path $dataPath "WinPE\Scripts"
-        
-        # Configure Main.cmd - uncomment WiFi lines and replace SSID
-        $mainCmdPath = Join-Path $scriptsPath "Main.cmd"
-        if (Test-Path $mainCmdPath) {
-            $mainCmdContent = Get-Content -Path $mainCmdPath -Raw
-            
-            # Replace WiFi SSID placeholder
-            if ($wifissid) {
-                # Uncomment WiFi lines (remove REM from start of lines)
-                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (net start wlansvc)', '$1'
-                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (netsh wlan add profile)', '$1'
-                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (netsh wlan connect)', '$1'
-                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (ping localhost)', '$1'
-            
-                # Replace SSID
-                $mainCmdContent = $mainCmdContent.Replace("@WIFISSID", $wifissid)
-            
-                # Save changes
-                Set-Content -Path $mainCmdPath -Value $mainCmdContent
-                Write-Host "  - Main.cmd configured with WiFi SSID" -ForegroundColor Green
-            }
-            else {
-                Write-Warning "  - WiFi SSID not configured in GLOBAL_PARAM.json"
-                Write-Warning "    WiFi will not connect automatically"
-            }
-        
-        }
-        else {
-            Write-Warning "  - Main.cmd not found - WiFi configuration skipped"
-        }
-        
-        # Configure wificonf.xml - replace SSID and password
-        $wifiConfPath = Join-Path $scriptsPath "wificonf.xml"
-        if (Test-Path $wifiConfPath) {
-            $wifiConfContent = Get-Content -Path $wifiConfPath -Raw
-            
-            # Replace WiFi placeholders    
-            $replacements = @{
-                "@WIFISSD" = $wifissid
-                "@WIFIPWD" = $wifipwd
-                "@WIFISEC" = if ($wifisecuritytype) { $wifisecuritytype } else { "WPA2PSK" }
-            }
-
-            $missing = @()
-            $changed = $false
-
-            foreach ($key in $replacements.Keys) {
-                $value = $replacements[$key]
-
-                if ([string]::IsNullOrWhiteSpace($value)) {
-                    $missing += $key
-                    continue
-                }
-
-                $wifiConfContent = $wifiConfContent.Replace($key, $value)
-                $changed = $true
-            }
-
-            if ($missing.Count -gt 0) {
-                Write-Warning "  - Missing WiFi parameters: $($missing -join ', ') in GLOBAL_PARAM.json"
-            }
-
-            if ($changed) {
-                Set-Content -Path $wifiConfPath -Value $wifiConfContent
-                Write-Host "  - wificonf.xml configured with credentials" -ForegroundColor Green
-            }
-            else {
-                Write-Warning "  - WiFi configuration not updated (no valid values provided)"
-            }
-
-        }
-        else {
-            Write-Warning "  - wificonf.xml not found - WiFi may not work"
-        }
-
+    [void] SetRecovery([System.IO.DirectoryInfo]$recovery) {
+        $this.recovery = $recovery
+        $this.reRoot = $recovery.Root
     }
 }
 #endregion
 
-if ($createDataFolder) {
-
-    #region IUD Data folder - Create folder structure first
+#region Graph API Functions
+function Get-GraphToken {
+    <#
+    .SYNOPSIS
+        Retrieves an access token for Microsoft Graph API using client credentials flow.
     
-    # Create the initial $iuc object with DownloadPath
-    $iuc = [PSCustomObject]@{
-        DataPath = $dataPath
-    }
-
-    # Update the $iuc object with additional paths
-    $iuc | Add-Member -MemberType NoteProperty -Name "WinPEPath" -Value (Join-Path -Path $iuc.DataPath -ChildPath "WinPE")
-    $iuc | Add-Member -MemberType NoteProperty -Name "ScriptsPath" -Value (Join-Path -Path $iuc.DataPath -ChildPath "WinPE\Scripts")
-    $iuc | Add-Member -MemberType NoteProperty -Name "DriversPath" -Value (Join-Path -Path $iuc.DataPath -ChildPath "Drivers")
-    $iuc | Add-Member -MemberType NoteProperty -Name "PackagesPath" -Value (Join-Path -Path $iuc.DataPath -ChildPath "Packages")
-    $iuc | Add-Member -MemberType NoteProperty -Name "WIMPath" -Value (Join-Path -Path $iuc.DataPath -ChildPath "Images")
-
-    foreach ($property in $iuc.PSObject.Properties) {
-        $path = $property.Value
-        if (!(Test-Path $path -ErrorAction SilentlyContinue)) {
-            New-Item $path -ItemType Directory -Force | Out-Null
-        }
-    }
+    .DESCRIPTION
+        Authenticates to Azure AD using client credentials and returns an access token
+        that can be used for Microsoft Graph API calls. Implements token caching to avoid
+        unnecessary authentication requests.
     
-    # CHECK IUC CONFIG
-    if (Test-Path "$dataPath\IUC-log.json") {
-        $IUClog = Get-Content -Path "$dataPath\IUC-log.json" | ConvertFrom-Json -Depth 20
+    .PARAMETER ClientID
+        The Azure AD application (client) ID
     
-        # Verify all required properties exist and add them if missing
-        $requiredProperties = @('installdate', 'scriptversion', 'isosize', 'winversion', 'wimdate', 'wimsize', 'pwshversion', 'pwshid', 'imageindex', 'deploymentType')
-        foreach ($property in $requiredProperties) {
-            if (-not $IUClog.PSObject.Properties.Match($property)) {
-                $IUClog | Add-Member -MemberType NoteProperty -Name $property -Value ""
-            }
-        }
+    .PARAMETER ClientSecret
+        The client secret for the Azure AD application
     
-        # Update properties
-        $IUClog.installdate = get-date
-        $IUClog.scriptversion = $iucversion
-    }
-    else {
-        $IUClog = [PSCustomObject]@{
-            installdate    = get-date
-            scriptversion  = $iucversion
-            isosize        = ""
-            winversion     = ""
-            wimdate        = ""
-            wimsize        = ""
-            pwshversion    = ""
-            pwshid         = ""
-            imageindex     = ""
-            deploymentType = ""
-        }
-    }
+    .PARAMETER TenantID
+        The Azure AD tenant ID
     
-    #endregion
-
-    #region download powershell
+    .PARAMETER Force
+        Forces a new token request even if a cached token exists
+    
+    .EXAMPLE
+        $token = Get-GraphToken -ClientID $appId -ClientSecret $secret -TenantID $tenantId
+    
+    .EXAMPLE
+        $token = Get-GraphToken -ClientID $appId -ClientSecret $secret -TenantID $tenantId -Force
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$ClientID,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ClientSecret,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$TenantID,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$Force
+    )
+    
     try {
-        #Find latest Powershell Version
-        $latestpwsh = Invoke-RestMethod -Uri "https://api.github.com/repos/powershell/powershell/releases/latest"
-        $pwshPath = "$($iuc.ScriptsPath)\pwsh"
-        $pwshZip = "$env:Temp\pwsh.zip"
-
-        #Do we already have the lastest version?
-        if (!(Test-Path -Path $pwshPath) -or $IUClog.pwshid -ne $latestpwsh.id -or $force) {
-            $IUClog.pwshversion = $latestpwsh.tag_name
-            $IUClog.pwshid = $latestpwsh.id
-            $latestpwshUrl = Invoke-RestMethod -Uri $latestpwsh.assets_url | ForEach-Object { $_.browser_download_url -like "*-win-x64.zip" }
-
-            Write-Host "`nGrabbing PowerShell... " -ForegroundColor Yellow -NoNewline
-            if (Test-Path -Path $pwshPath) {
-                Remove-Item -Path $pwshPath -Recurse
+        # Create a unique cache key based on credentials
+        $cacheKey = "$TenantID|$ClientID"
+        
+        # Check if we have a valid cached token (with 5-minute buffer before expiry)
+        if (-not $Force -and $script:GraphTokenCache.ContainsKey($cacheKey)) {
+            $cachedEntry = $script:GraphTokenCache[$cacheKey]
+            if ($cachedEntry.Expiry -gt (Get-Date).AddMinutes(5)) {
+                Write-Verbose "Using cached Graph API token (expires: $($cachedEntry.Expiry))"
+                return $cachedEntry.Token
             }
-            Invoke-RestMethod -Method Get -Uri $latestpwshUrl -OutFile $pwshZip
-            Expand-Archive -Path $pwshZip -DestinationPath $pwshPath
-            Remove-Item -Path $pwshZip
-            Write-Host $([char]0x221a) -ForegroundColor Green
+            else {
+                Write-Verbose "Cached token expired, requesting new token"
+                $script:GraphTokenCache.Remove($cacheKey)
+            }
         }
-        else {
-            Write-Host "`nPowerShell version the same" -ForegroundColor Yellow
+        
+        Write-Verbose "Requesting new Graph API token for tenant: $TenantID"
+        
+        $body = @{
+            tenant        = $TenantID
+            client_id     = $ClientID
+            scope         = 'https://graph.microsoft.com/.default'
+            client_secret = $ClientSecret
+            grant_type    = 'client_credentials'
         }
+        
+        $params = @{
+            Uri         = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
+            Method      = 'Post'
+            Body        = $body
+            ContentType = 'application/x-www-form-urlencoded'
+        }
+        
+        $response = Invoke-RestMethod @params
+        
+        # Cache the token with expiry information
+        $script:GraphTokenCache[$cacheKey] = @{
+            Token   = $response.access_token
+            Expiry  = (Get-Date).AddSeconds($response.expires_in)
+            Obtained = Get-Date
+        }
+        
+        Write-Verbose "New token obtained, expires in $($response.expires_in) seconds"
+        return $response.access_token
     }
     catch {
-        Write-Host "No PowerShell version found" -ForegroundColor Red
-        $IUClog.pwshversion = ""
-        $IUClog.pwshid = ""
+        Write-Error "Failed to obtain Graph API token: $($_.Exception.Message)"
+        throw
     }
-    #endregion
+}
 
-    #region STEP 1: Get Windows ISO and extract install.wim
-    Write-Host "`n=== STEP 1: Getting Windows install.wim ===" -ForegroundColor Magenta
+function Invoke-GraphRequest {
+    <#
+    .SYNOPSIS
+        Makes a generic Microsoft Graph API request.
     
-    # Find Windows ISO Path
-    $validIsoFound = $false
-    while (-not $validIsoFound) {
-        if (-not $windowsIsoPath) {
-            Write-Host "Enter the path to the Windows ISO: " -ForegroundColor Yellow -NoNewLine
-            $windowsIsoPath = Read-Host
-        }
-
-        # Remove quotes from path
-        $windowsIsoPath = $windowsIsoPath.Trim('"').Trim("'")
-
-        # Validate path exists
-        if (-not (Test-Path -Path $windowsIsoPath -ErrorAction SilentlyContinue)) {
-            Write-Host "The path '$windowsIsoPath' does not exist. Please enter a valid path." -ForegroundColor Red
-            $windowsIsoPath = $null
-            continue
-        }
-
-        # Validate it's an ISO file
-        if (-not ($windowsIsoPath -like "*.iso")) {
-            Write-Host "The file '$windowsIsoPath' is not an ISO file. Please provide a valid Windows ISO." -ForegroundColor Red
-            $windowsIsoPath = $null
-            continue
-        }
-
-        # Test ISO integrity by attempting to mount it
-        try {
-            Write-Host "Validating ISO file..." -ForegroundColor Cyan
-            $testMount = Mount-DiskImage -ImagePath $windowsIsoPath -Access ReadOnly -PassThru -ErrorAction Stop
-            Dismount-DiskImage -ImagePath $windowsIsoPath -ErrorAction Stop
-            $validIsoFound = $true
-            Write-Host "ISO validation successful" -ForegroundColor Green
-        }
-        catch {
-            Write-Host "The ISO file appears to be corrupt or invalid: $($_.Exception.Message)" -ForegroundColor Red
-            $windowsIsoPath = $null
-            continue
-        }
-    }
-
-    # Get the ISO size
-    $isosize = Get-Item -Path $windowsIsoPath
-
-    # Get wim and imageindex from ISO
-    $needsReExtraction = $false
+    .DESCRIPTION
+        A wrapper function for making Microsoft Graph API calls with automatic pagination
+        support, retry logic, and consistent error handling.
     
-    # Check if we need to re-extract based on ISO size, missing file, force, or changed image index
-    if ($force) {
-        $needsReExtraction = $true
-        Write-Verbose "Force flag set - will re-extract install.wim"
-    }
-    elseif (!(Test-Path "$($iuc.WIMPath)\install.wim")) {
-        $needsReExtraction = $true
-        Write-Verbose "install.wim not found - will extract"
-    }
-    elseif ($isosize.Length -ne $IUClog.isosize) {
-        $needsReExtraction = $true
-        Write-Verbose "ISO size changed - will re-extract install.wim"
-    }
-    elseif (Test-Path "$($iuc.WIMPath)\imageIndex.json") {
-        # Check if image index has changed
-        $currentIndex = (Get-Content "$($iuc.WIMPath)\imageIndex.json" | ConvertFrom-Json).ImageIndex
-        if ($imageIndex -and $currentIndex -ne $imageIndex) {
-            $needsReExtraction = $true
-            Write-Host "Image index changed ($currentIndex → $imageIndex) - will re-extract install.wim" -ForegroundColor Yellow
-        }
-    }
+    .PARAMETER Uri
+        The Graph API endpoint URI (can be relative or absolute)
     
-    if ($needsReExtraction) {
-
-        Write-Host "`nGetting install.wim from windows media... " -ForegroundColor Yellow -NoNewline
+    .PARAMETER Method
+        HTTP method (GET, POST, PATCH, DELETE, etc.)
     
-        if (Test-Path "$($iuc.WIMPath)\install.wim") {
-            Remove-Item -Path "$($iuc.WIMPath)\install.wim" -Force
-        }
-
-        Get-WimFromIso -isoPath $windowsIsoPath -wimDestination $iuc.WIMPath
+    .PARAMETER Body
+        Request body (will be converted to JSON if not already a string)
     
-        #get image index from wim
-        if ($imageIndex) {
-            @{
-                "ImageIndex" = $imageIndex
-            } | ConvertTo-Json -Depth 20 | Out-File "$($iuc.WIMPath)\imageIndex.json"
-        }
-        else {
-            Write-Host "`nGetting image index from install.wim... " -ForegroundColor Yellow
-            Get-ImageIndexFromWim -wimPath "$($iuc.WIMPath)\install.wim" -destination $iuc.WIMPath
-            $IUClog.winversion = Get-Content "$($iuc.WIMPath)\imageIndex.json" | ConvertFrom-Json -Depth 100 | Select-Object $_.ImageName
-        }
-        $IUClog.isosize = Get-Item -Path $windowsIsoPath
-        $wimfile = Get-Item -Path "$($iuc.WIMPath)\install.wim"
-        $IUClog.wimdate = $wimfile.CreationTime
-        $IUClog.wimsize = $wimfile.Length
-        $IUClog.isosize = $isosize.Length
-    }
-    else {
-        Write-Host "Using existing install.wim (same ISO and image index)" -ForegroundColor Yellow
-        $wimfile = Get-Item -Path "$($iuc.WIMPath)\install.wim"
-    }
+    .PARAMETER AccessToken
+        The bearer token for authentication
     
-    # Read the selected image index for WinRE extraction
-    $selectedImageIndex = (Get-Content "$($iuc.WIMPath)\imageIndex.json" | ConvertFrom-Json).ImageIndex
-    Write-Host "Selected Windows Image Index: $selectedImageIndex" -ForegroundColor Cyan
+    .PARAMETER ApiVersion
+        Graph API version to use (v1.0 or beta). Default is v1.0
     
-    #endregion
-
-    #region STEP 2: Extract WinRE from install.wim if requested
-    $extractedWinREPath = $null
+    .PARAMETER ContentType
+        Content type for the request. Default is application/json
     
-    if ($useWinRE) {
-        Write-Host "`n=== STEP 2: Extracting WinRE.wim from install.wim ===" -ForegroundColor Magenta
+    .PARAMETER MaxRetries
+        Maximum number of retry attempts for transient failures. Default is 3
+    
+    .PARAMETER RetryDelaySeconds
+        Initial delay in seconds between retries (uses exponential backoff). Default is 2
+    
+    .EXAMPLE
+        $response = Invoke-GraphRequest -Uri "deviceManagement/windowsAutopilotDeviceIdentities" -Method GET -AccessToken $token
+    
+    .EXAMPLE
+        $body = @{ displayName = "MyDevice"; groupTag = "Finance" }
+        $response = Invoke-GraphRequest -Uri "deviceManagement/windowsAutopilotDeviceIdentities/$id/UpdateDeviceProperties" -Method POST -Body $body -AccessToken $token -ApiVersion beta
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
         
-        # Create temp directory for WinRE extraction
-        $winreTempPath = Join-Path $downloadPath "WINRE_EXTRACTED"
-        if (-not (Test-Path $winreTempPath)) {
-            New-Item -Path $winreTempPath -ItemType Directory -Force | Out-Null
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('GET', 'POST', 'PATCH', 'PUT', 'DELETE')]
+        [string]$Method = 'GET',
+        
+        [Parameter(Mandatory = $false)]
+        [object]$Body,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$AccessToken,
+        
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('v1.0', 'beta')]
+        [string]$ApiVersion = 'v1.0',
+        
+        [Parameter(Mandatory = $false)]
+        [string]$ContentType = 'application/json',
+        
+        [Parameter(Mandatory = $false)]
+        [int]$MaxRetries = 3,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$RetryDelaySeconds = 2
+    )
+    
+    try {
+        # Ensure URI is absolute
+        if (-not $Uri.StartsWith('https://')) {
+            $Uri = "https://graph.microsoft.com/$ApiVersion/$Uri"
         }
         
-        # Check if WinRE was already extracted from the same install.wim
-        $winreExtractedPath = Join-Path $winreTempPath "winre.wim"
-        $winreLogPath = Join-Path $winreTempPath "extraction.json"
-        $needsExtraction = $true
+        $headers = @{
+            Authorization = "Bearer $AccessToken"
+        }
         
-        if ((Test-Path $winreExtractedPath) -and (Test-Path $winreLogPath) -and -not $force) {
+        $params = @{
+            Uri         = $Uri
+            Method      = $Method
+            Headers     = $headers
+            ContentType = $ContentType
+        }
+        
+        # Add body if provided
+        if ($Body) {
+            if ($Body -is [string]) {
+                $params.Body = $Body
+            }
+            else {
+                $params.Body = $Body | ConvertTo-Json -Depth 10
+            }
+        }
+        
+        # Retry logic with exponential backoff
+        $retryCount = 0
+        $completed = $false
+        $response = $null
+        
+        while (-not $completed -and $retryCount -le $MaxRetries) {
             try {
-                $extractionLog = Get-Content $winreLogPath | ConvertFrom-Json
+                $response = Invoke-RestMethod @params
+                $completed = $true
+            }
+            catch {
+                $statusCode = $_.Exception.Response.StatusCode.value__
                 
-                # Check if it's from the same install.wim, image index, and WIM hasn't changed
-                if ($extractionLog.wimsize -eq $wimfile.Length -and 
-                    $extractionLog.wimdate -eq $wimfile.CreationTime -and
-                    $extractionLog.imageindex -eq $selectedImageIndex) {
+                # Check if we should retry (429 = Too Many Requests, 503 = Service Unavailable, 504 = Gateway Timeout)
+                if ($statusCode -in @(429, 503, 504) -and $retryCount -lt $MaxRetries) {
+                    $retryCount++
                     
-                    Write-Host "Using previously extracted WinRE.wim (same source and index)" -ForegroundColor Green
-                    $extractedWinREPath = $winreExtractedPath
-                    $needsExtraction = $false
-                }
-                else {
-                    # Log why we're re-extracting
-                    if ($extractionLog.imageindex -ne $selectedImageIndex) {
-                        Write-Host "Image index changed ($($extractionLog.imageindex) → $selectedImageIndex) - re-extracting WinRE.wim" -ForegroundColor Yellow
-                    }
-                    elseif ($extractionLog.wimsize -ne $wimfile.Length) {
-                        Write-Host "install.wim size changed - re-extracting WinRE.wim" -ForegroundColor Yellow
+                    # Check for Retry-After header
+                    $retryAfter = $_.Exception.Response.Headers['Retry-After']
+                    if ($retryAfter) {
+                        $waitTime = [int]$retryAfter
                     }
                     else {
-                        Write-Host "install.wim date changed - re-extracting WinRE.wim" -ForegroundColor Yellow
+                        # Exponential backoff: 2s, 4s, 8s, etc.
+                        $waitTime = $RetryDelaySeconds * [Math]::Pow(2, $retryCount - 1)
                     }
-                }
-            }
-            catch {
-                Write-Verbose "Could not read extraction log, will re-extract: $_"
-            }
-        }
-        
-        if ($needsExtraction) {
-            try {
-                # Ensure WINPEFILES directory exists for WiFi DLLs
-                $peFiles = Join-Path -Path $downloadPath -ChildPath "WINPEFILES"
-                if (-not (Test-Path $peFiles)) {
-                    New-Item -Path $peFiles -ItemType Directory -Force | Out-Null
-                }
-                
-                # Extract WinRE from install.wim (also extracts WiFi DLLs)
-                $extractedWinREPath = Get-WinREFromInstallWim `
-                    -InstallWimPath "$($iuc.WIMPath)\install.wim" `
-                    -ImageIndex $selectedImageIndex `
-                    -Destination $winreTempPath `
-                    -WinPEFilesPath $peFiles
-                
-                if ($extractedWinREPath -and (Test-Path $extractedWinREPath)) {
-                    # Save extraction log for caching
-                    $extractionInfo = @{
-                        wimsize     = $wimfile.Length
-                        wimdate     = $wimfile.CreationTime
-                        imageindex  = $selectedImageIndex
-                        extractdate = Get-Date
-                    }
-                    $extractionInfo | ConvertTo-Json | Set-Content -Path $winreLogPath
                     
-                    Write-Host "WinRE.wim successfully extracted and will be used for boot media" -ForegroundColor Green
+                    Write-Warning "Request failed with status $statusCode. Retrying in $waitTime seconds (Attempt $retryCount of $MaxRetries)..."
+                    Start-Sleep -Seconds $waitTime
+                    
+                    # Update URI in case it was a nextLink
+                    $params.Uri = $Uri
                 }
                 else {
-                    Write-Warning "Failed to extract WinRE.wim - falling back to WinPE"
-                    $useWinRE = $false
+                    # Not a retryable error or max retries reached
+                    throw
                 }
             }
-            catch {
-                Write-Warning "Error extracting WinRE.wim: $($_.Exception.Message)"
-                Write-Host "Falling back to WinPE.wim..." -ForegroundColor Yellow
-                $useWinRE = $false
-            }
-        }
-    }
-    else {
-        Write-Host "`n=== STEP 2: Skipping WinRE extraction (using WinPE) ===" -ForegroundColor Magenta
-    }
-    
-    #endregion
-
-    #region STEP 3: Build WinPE or WinRE boot media
-    Write-Host "`n=== STEP 3: Building boot media ===" -ForegroundColor Magenta
-
-    #region WinPE Data Paths
-     
-    $pePath = Join-Path -Path $downloadPath -ChildPath "WINPEMEDIA"
-    $newWIMPath = Join-Path -Path $pePath -ChildPath "sources\boot.wim"
-    $peFiles = Join-Path -Path $downloadPath -ChildPath "WINPEFILES"
-
-    # optional set in global_param.json
-    $winPEdrivers = Join-Path -Path $downloadPath -ChildPath "WINPEDRIVERS"
-    $winPEupdates = Join-Path -Path $downloadPath -ChildPath "WINPEUPDATES"
-    #endregion
-
-    if (!$force -and $(Test-IsDirectoryEmpty $pePath).IsEmpty -eq $false) {
-
-        do {
-            $response = $(Write-Host "$pePath is not empty. Do you want to rebuild WINPEMEDIA? (Y/N) " -ForegroundColor Yellow -NoNewLine; Read-Host)
-            $response = $response.ToLower()
-        } until ($response -eq "y" -or $response -eq "n" -or $response -eq "yes" -or $response -eq "no")
-        
-        if ($response -eq "n" -or $response -eq "no") {
-            $buildwinpemedia = $false
-            Write-Host "Skipping rebuilding WINPEPMEDIA" -ForegroundColor Yellow       
-        }
-        else {
-            $buildwinpemedia = $true
-            Remove-item -Path $pePath -Recurse -Force
-        }
-    }
-    else {
-        $buildwinpemedia = $true
-    }
-    
-    if ($buildwinpemedia) {
-           
-        #region Check for WinRE.wim - use extracted if available
-        $useWinREImage = $false
-        $sourceWimPath = $null
-        
-        if ($useWinRE -and $extractedWinREPath -and (Test-Path $extractedWinREPath)) {
-            Write-Host "`nUsing extracted WinRE.wim from install.wim" -ForegroundColor Green
-            $sourceWimPath = $extractedWinREPath
-            $useWinREImage = $true
-        }
-        #endregion
-           
-        #region Get Windows ADK information from the Registry - Credits CloudOSD
-        $InstalledRoots = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots'
-        $RegistryValue = 'KitsRoot10'
-        $KitsRoot10 = $null
-     
-        if (Test-Path -Path $InstalledRoots) {
-            $RegistryKey = Get-Item -Path $InstalledRoots
-            if ($null -ne $RegistryKey.GetValue($RegistryValue)) {
-                $KitsRoot10 = Get-ItemPropertyValue -Path $InstalledRoots -Name $RegistryValue -ErrorAction SilentlyContinue
-            }
-        }
-
-        if ($KitsRoot10) {
-            $winPEPath = Join-Path $KitsRoot10 'Assessment and Deployment Kit\Windows Preinstallation Environment\amd64'
-            $winpemedia = "$winPEpath\Media\"
-            $packagepath = "$winPEpath\WinPE_OCs\"
-            
-            if ($useWinREImage) {
-                Write-Host "ADK found - using WinRE.wim with optional components available" -ForegroundColor Green
-            }
-            else {
-                $sourceWimPath = "$winPEpath\en-us\winpe.wim"
-                Write-Host "ADK found - using WinPE.wim from ADK" -ForegroundColor Green
-            }
-        }
-        else {
-            Write-Warning "Windows PE ADK Not Found, Please Install"
-            return
-        }
-        #endregion
-
-        #These are needed for Intune USB Deployment
-        $OptionalComponents = @("WinPE-WDS-Tools", "WinPE-Scripting", "WinPE-WMI", "WinPE-SecureStartup", "WinPE-NetFx", "WinPE-PowerShell", "WinPE-StorageWMI", "WinPE-DismCmdlets")
-        
-        # Copy the winpe media (copy only essential boot files for both WinPE and WinRE)
-        if ($winpemedia -and (Test-Path $winpemedia)) {
-            Write-Host "Copying boot files..." -ForegroundColor Cyan
-            
-            # Create destination if it doesn't exist
-            if (-not (Test-Path $pePath)) {
-                New-Item -Path $pePath -ItemType Directory -Force | Out-Null
-            }
-            
-            # Copy only essential boot files (bootmgr, bootmgr.efi, boot folder)
-            # No need to copy language files and other media that aren't needed
-            $bootFiles = @("bootmgr", "bootmgr.efi", "boot")
-            $copiedFiles = 0
-            
-            foreach ($bootFile in $bootFiles) {
-                $sourcePath = Join-Path $winpemedia $bootFile
-                if (Test-Path $sourcePath) {
-                    Copy-Item -Path $sourcePath -Destination $pePath -Recurse -Force -ErrorAction SilentlyContinue
-                    Write-Verbose "  Copied: $bootFile"
-                    $copiedFiles++
-                }
-            }
-            
-            if ($copiedFiles -gt 0) {
-                if ($useWinREImage) {
-                    Write-Host "Essential boot files copied for WinRE ($copiedFiles/$($bootFiles.Count))" -ForegroundColor Green
-                }
-                else {
-                    Write-Host "Essential boot files copied for WinPE ($copiedFiles/$($bootFiles.Count))" -ForegroundColor Green
-                }
-            }
-            else {
-                Write-Warning "No boot files found in ADK media - USB may not be bootable"
-            }
-        }
-        else {
-            Write-Warning "ADK media not found at $winpemedia"
         }
         
-        new-item -Path $pePath -Name "sources" -ItemType Directory -ErrorAction:Ignore
-
-        # Validate source WIM path
-        if (-not (Test-Path $sourceWimPath)) {
-            if ($useWinREImage) {
-                Write-Error "WinRE.wim file does not exist at: $sourceWimPath" -ErrorAction "Stop"
-            }
-            else {
-                Write-Error "WinPE.wim file does not exist at: $sourceWimPath" -ErrorAction "Stop"
-            }
+        if (-not $completed) {
+            throw "Request failed after $MaxRetries retry attempts"
         }
-
-        # Copy the source wim (either WinRE or WinPE)
-        if ($useWinREImage) {
-            Write-Host "Copying WinRE.wim to boot.wim..." -ForegroundColor Cyan
-        }
-        else {
-            Write-Host "Copying WinPE.wim to boot.wim..." -ForegroundColor Cyan
-        }
-        $peNew = Copy-Item -Path $sourceWimPath -Destination $newWIMPath -Force -PassThru
-
-        # Mount the winpe.wim
-        $peMount = "$($env:TEMP)\mount_winpe"
-        if (-not (Test-Path $peMount)) {
-            New-Item $peMount -ItemType Directory | Out-Null
-        }
-        else {
-            Remove-Item $peMount -Recurse
-            New-Item $peMount -ItemType Directory | Out-Null
-        }
-
-        #Mounting...
-        try {
-            Mount-WindowsImage -Path $peMount -ImagePath $newWIMPath -Index 1 | Out-Null
-    
-            # Delete winpeshl.ini if using WinRE (allows normal boot process)
-            if ($useWinREImage) {
-                $winpeshlPath = Join-Path $peMount "Windows\System32\winpeshl.ini"
-                if (Test-Path $winpeshlPath) {
-                    Write-Host "Removing winpeshl.ini from WinRE for proper boot..." -ForegroundColor Cyan
-                    Remove-Item -Path $winpeshlPath -Force
-                }
-            }
-           
-            # Add PE Files
+        
+        # Handle pagination for GET requests
+        if ($Method -eq 'GET' -and $response.PSObject.Properties.Name -contains 'value') {
+            $allResults = [System.Collections.Generic.List[object]]::new()
+            $allResults.AddRange($response.value)
             
-            # Define the well-known SID for the Administrators group
-            $adminSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-544")
-            $adminAccount = $adminSid.Translate([System.Security.Principal.NTAccount])
-
-            # Copy PE files with ownership handling
-            Get-ChildItem $peFiles -Recurse | ForEach-Object {
-                if ($_.PSIsContainer) { return }  # Skip directories
+            while ($response.'@odata.nextLink') {
+                Write-Verbose "Fetching next page: $($response.'@odata.nextLink')"
+                $params.Uri = $response.'@odata.nextLink'
                 
-                # Calculate destination path
-                $relativePath = $_.FullName.Substring((Get-Item $peFiles).FullName.Length)
-                $destFilePath = Join-Path -Path $peMount -ChildPath $relativePath
+                # Apply same retry logic for pagination
+                $retryCount = 0
+                $completed = $false
                 
-                # Ensure destination directory exists
-                $destDir = Split-Path -Path $destFilePath -Parent
-                if (-not (Test-Path -Path $destDir)) {
-                    New-Item -Path $destDir -ItemType Directory -Force | Out-Null
-                }
-                
-                # Take ownership if file exists, then copy
-                if (Test-Path -Path $destFilePath) {
-                    Set-FileOwnership -FilePath $destFilePath -Owner $adminAccount | Out-Null
-                }
-                
-                Copy-Item -Path $_.FullName -Destination $destFilePath -Force | Out-Null
-            }
-            
-            # Configure custom background for WinRE
-            if ($useWinREImage) {
-                $winpeJpgPath = "$peMount\Windows\System32\winpe.jpg"
-                $winreJpgPath = "$peMount\Windows\System32\winre.jpg"
-                
-                if (Test-Path $winpeJpgPath) {
-                    Write-Host "Configuring custom WinRE background..." -ForegroundColor Cyan
-                    
-                    # Remove existing winre.jpg (WinRE has a default one)
-                    if (Test-Path $winreJpgPath) {
-                        if (Set-FileOwnership -FilePath $winreJpgPath -Owner $adminAccount) {
-                            Remove-Item -Path $winreJpgPath -Force -ErrorAction SilentlyContinue
+                while (-not $completed -and $retryCount -le $MaxRetries) {
+                    try {
+                        $response = Invoke-RestMethod @params
+                        $completed = $true
+                        $allResults.AddRange($response.value)
+                    }
+                    catch {
+                        $statusCode = $_.Exception.Response.StatusCode.value__
+                        if ($statusCode -in @(429, 503, 504) -and $retryCount -lt $MaxRetries) {
+                            $retryCount++
+                            $retryAfter = $_.Exception.Response.Headers['Retry-After']
+                            $waitTime = if ($retryAfter) { [int]$retryAfter } else { $RetryDelaySeconds * [Math]::Pow(2, $retryCount - 1) }
+                            Write-Warning "Pagination request failed with status $statusCode. Retrying in $waitTime seconds..."
+                            Start-Sleep -Seconds $waitTime
+                        }
+                        else {
+                            throw
                         }
                     }
-                    
-                    # Rename custom winpe.jpg to winre.jpg
-                    Rename-Item -Path $winpeJpgPath -NewName "winre.jpg" -Force
-                    Write-Host "Custom background configured for WinRE" -ForegroundColor Green
                 }
             }
-
-            #Registry modifications    
-            try {
-                Write-Host "Modifying WinPE registry settings..." -ForegroundColor Yellow
-    
-                # Load WinPE SYSTEM hive
-                $regLoadResult = Reg Load HKLM\WinPE "$peMount\Windows\System32\config\DEFAULT" 2>&1
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Failed to load registry hive: $regLoadResult"
-                }
-    
-                try {
-                    # Show hidden files
-                    Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v Hidden /t REG_DWORD /d 1 /f > $null 2>&1
-                    Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v ShowSuperHidden /t REG_DWORD /d 1 /f > $null 2>&1
-                    
-                    # Show file extensions
-                    Reg Add HKLM\WinPE\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v HideFileExt /t REG_DWORD /d 0 /f > $null 2>&1
-                }
-                finally {
-                    # Always attempt to unload
-                    [gc]::Collect()
-                    Start-Sleep -Milliseconds 500
-                    $unloadResult = Reg Unload HKLM\WinPE 2>&1
-                    if ($LASTEXITCODE -ne 0) {
-                        Write-Warning "Failed to unload registry hive on first attempt: $unloadResult"
-                        # Retry after delay
-                        Start-Sleep -Seconds 2
-                        Reg Unload HKLM\WinPE 2>&1
-                    }
-                }
-            }
-            catch {
-                Write-Error "Registry modification failed: $_"
-                throw
-            }
-
-            # Add the needed components to it (only if we have package path)
-            if ($packagepath -and (Test-Path $packagepath)) {
-                foreach ($Component in $OptionalComponents) {
-                    Write-Host "Adding $Component..." -ForegroundColor Cyan
-                    Add-WinPEPackage -MountPath $peMount -Package $Component -PackagePath $packagepath
-                }
-            }
-            elseif ($useWinREImage) {
-                Write-Host "Skipping optional components - ADK not available or WinRE already has required components" -ForegroundColor Yellow
-            }
-            else {
-                Write-Warning "Package path not found - skipping optional components"
-            }
+            
+            Write-Verbose "Retrieved $($allResults.Count) total items"
+            return $allResults.ToArray()
+        }
         
-            # Inject any needed drivers
-            if ($(Test-IsDirectoryEmpty $winPEdrivers)) {
-                "Adding Drivers..."
-                Add-InjectedDrivers -MountPath $peMount -DriverPath $winPEdrivers
-            }
-
-            # Inject any needed update
-            if ($(Test-IsDirectoryEmpty $winPEupdates)) {
-                "Adding Updates..."
-                Get-ChildItem $winPEupdates | ForEach-Object { 
-                    Add-WinPEPackage -Path $peMount -PackagePath $_.FullName
+        return $response
+    }
+    catch {
+        $errorMessage = "Graph API request failed: $($_.Exception.Message)"
+        
+        if ($_.ErrorDetails.Message) {
+            try {
+                $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+                if ($errorDetails.error.message) {
+                    $errorMessage += "`nGraph API Error: $($errorDetails.error.message)"
+                }
+                if ($errorDetails.error.code) {
+                    $errorMessage += "`nError Code: $($errorDetails.error.code)"
                 }
             }
-
-            # Unmount and commit    
-            Dismount-WindowsImage -Path $peMount -Save
-        }
-        catch {
-            Write-Error "WinPE customization failed: $_"
-            # Attempt cleanup
-            try {
-                Dismount-WindowsImage -Path $peMount -Discard -ErrorAction SilentlyContinue
-            }
             catch {
-                Write-Warning "Failed to dismount WinPE image. Manual cleanup may be required."
-            }
-            throw
-        }
-        finally {
-            if (Test-Path $peMount) {
-                Remove-Item $peMount -Recurse -Force -ErrorAction SilentlyContinue
+                $errorMessage += "`nDetails: $($_.ErrorDetails.Message)"
             }
         }
-       
-        # Report completion
-        if ($useWinREImage) {
-            Write-Host "Boot image generated from WinRE.wim: $peNew" -ForegroundColor Green
-        }
-        else {
-            Write-Host "Boot image generated from WinPE.wim: $peNew" -ForegroundColor Green
-        }
-
-        #endregion
+        
+        Write-Error $errorMessage
+        throw
     }
+}
 
-    #region STEP 4: Copy WinPE data and scripts
-    Write-Host "`n=== STEP 4: Copying WinPE data and scripts ===" -ForegroundColor Magenta
+function Get-AutopilotDevice {
+    <#
+    .SYNOPSIS
+        Retrieves Windows Autopilot device(s) from Intune.
     
-    #COPY WINPE Data
-    Write-Host "Copying WinPE media to data folder..." -ForegroundColor Cyan
-    copy-item -Path "$pePath\*" -Destination $iuc.WinPEPath -Recurse -ErrorAction:Ignore
-
-    #COPY Scripts Data
-    Write-Host "Copying deployment scripts..." -ForegroundColor Cyan
-    copy-item -Path "$downloadPath\SCRIPT\*" -Destination $iuc.ScriptsPath -Recurse -ErrorAction:Ignore
-
-    # Define the main script file path
-    $scriptPath = Join-Path -Path $iuc.ScriptsPath -ChildPath "Invoke-Provision.ps1"
-
-    # Check if the file exists
-    if (-not (Test-Path -Path $scriptPath)) {
-        Write-Error "The file 'Invoke-Provision.ps1' does not exist at the specified path: $scriptPath"
-        exit 1
+    .PARAMETER Id
+        Specific device ID to retrieve
+    
+    .PARAMETER SerialNumber
+        Filter by serial number (supports partial match)
+    
+    .PARAMETER ClientID
+        Azure AD application (client) ID
+    
+    .PARAMETER ClientSecret
+        Client secret for authentication
+    
+    .PARAMETER TenantID
+        Azure AD tenant ID
+    
+    .EXAMPLE
+        Get-AutopilotDevice -SerialNumber "12345" -ClientID $id -ClientSecret $secret -TenantID $tenant
+    
+    .EXAMPLE
+        Get-AutopilotDevice -Id $deviceId -ClientID $id -ClientSecret $secret -TenantID $tenant
+    
+    .EXAMPLE
+        $allDevices = Get-AutopilotDevice -ClientID $id -ClientSecret $secret -TenantID $tenant
+    #>
+    [CmdletBinding(DefaultParameterSetName = 'All')]
+    param (
+        [Parameter(Mandatory = $true, ParameterSetName = 'ById')]
+        [string]$Id,
+        
+        [Parameter(Mandatory = $true, ParameterSetName = 'BySerial')]
+        [string]$SerialNumber,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ClientID,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ClientSecret,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$TenantID
+    )
+    
+    try {
+        $token = Get-GraphToken -ClientID $ClientID -ClientSecret $ClientSecret -TenantID $TenantID
+        
+        # Build URI based on parameter set
+        switch ($PSCmdlet.ParameterSetName) {
+            'ById' {
+                $uri = "deviceManagement/windowsAutopilotDeviceIdentities/$Id"
+            }
+            'BySerial' {
+                $uri = "deviceManagement/windowsAutopilotDeviceIdentities?`$filter=contains(serialNumber,'$SerialNumber')"
+            }
+            'All' {
+                $uri = "deviceManagement/windowsAutopilotDeviceIdentities"
+            }
+        }
+        
+        $params = @{
+            Uri         = $uri
+            Method      = 'GET'
+            AccessToken = $token
+            ApiVersion  = 'v1.0'
+        }
+        
+        return Invoke-GraphRequest @params
     }
+    catch {
+        Write-Error "Failed to retrieve Autopilot device(s): $($_.Exception.Message)"
+        throw
+    }
+}
 
-    # Read the file content if it exists
-    $scriptContent = Get-Content -Path $scriptPath -Raw
+function Add-AutopilotImportedDevice {
+    <#
+    .SYNOPSIS
+        Imports a Windows Autopilot device identity to Intune.
     
-    # Replace the placeholder values with the new values
-    $scriptContent = $scriptContent.Replace("@TENANT", [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($tenant | ConvertTo-Json -Compress))))
-    $scriptContent = $scriptContent.Replace("@WELCOMEBANNER", $iudwelcomebanner)
-
-    # Save the updated content back to the script
-    Set-Content -Path "$($iuc.ScriptsPath)\Invoke-Provision.ps1" -Value $scriptContent
-    Write-Host "Scripts configured successfully" -ForegroundColor Green
-
-    #endregion
-
-    # Update deployment metadata in IUC-log
-    $IUClog.imageindex = $selectedImageIndex
-    $IUClog.deploymentType = if ($useWinREImage) { "WinRE" } else { "WinPE" }
+    .PARAMETER SerialNumber
+        The device serial number
     
-    #We are done - save IUC-log
-    $IUClog | ConvertTo-Json | Set-Content -Path "$dataPath\IUC-log.json" -Encoding utf8
-    Write-Host "`nDeployment share created: $($IUClog.deploymentType)" -ForegroundColor Green
-    #end region
-
-    do {
-        $response = $(Write-Host "Ready to Create USB Stick (Y/N) " -ForegroundColor Yellow -NoNewLine; Read-Host)
-        $response = $response.ToLower()
-    } until ($response -eq "y" -or $response -eq "n" -or $response -eq "yes" -or $response -eq "no")
+    .PARAMETER HardwareIdentifier
+        The device hardware hash
     
-    if ($response -eq "n" -or $response -eq "no") {
-        Write-Host "Skipping creating USB stick" -ForegroundColor Yellow       
-        Exit
+    .PARAMETER ClientID
+        Azure AD application (client) ID
+    
+    .PARAMETER ClientSecret
+        Client secret for authentication
+    
+    .PARAMETER TenantID
+        Azure AD tenant ID
+    
+    .EXAMPLE
+        Add-AutopilotImportedDevice -SerialNumber "12345" -HardwareIdentifier $hash -ClientID $id -ClientSecret $secret -TenantID $tenant
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$SerialNumber,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$HardwareIdentifier,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ClientID,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ClientSecret,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$TenantID
+    )
+    
+    try {
+        $token = Get-GraphToken -ClientID $ClientID -ClientSecret $ClientSecret -TenantID $TenantID
+        
+        $body = @{
+            serialNumber       = $SerialNumber
+            hardwareIdentifier = $HardwareIdentifier
+        }
+        
+        $params = @{
+            Uri         = "deviceManagement/importedWindowsAutopilotDeviceIdentities"
+            Method      = 'POST'
+            Body        = $body
+            AccessToken = $token
+            ApiVersion  = 'beta'
+        }
+        
+        return Invoke-GraphRequest @params
+    }
+    catch {
+        Write-Error "Failed to import Autopilot device: $($_.Exception.Message)"
+        throw
+    }
+}
+
+function Set-AutopilotDevice {
+    <#
+    .SYNOPSIS
+        Updates an Autopilot device's properties (display name and group tag).
+    
+    .PARAMETER Id
+        The Autopilot device ID
+    
+    .PARAMETER DisplayName
+        The device display name
+    
+    .PARAMETER GroupTag
+        The device group tag (optional)
+    
+    .PARAMETER ClientID
+        Azure AD application (client) ID
+    
+    .PARAMETER ClientSecret
+        Client secret for authentication
+    
+    .PARAMETER TenantID
+        Azure AD tenant ID
+    
+    .EXAMPLE
+        Set-AutopilotDevice -Id $deviceId -DisplayName "DESKTOP-001" -GroupTag "Finance" -ClientID $id -ClientSecret $secret -TenantID $tenant
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$Id,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName,
+        
+        [Parameter(Mandatory = $false)]
+        [Alias("OrderIdentifier")]
+        [string]$GroupTag = "",
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ClientID,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ClientSecret,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$TenantID
+    )
+    
+    try {
+        $token = Get-GraphToken -ClientID $ClientID -ClientSecret $ClientSecret -TenantID $TenantID
+        
+        $body = @{
+            displayName = $DisplayName
+            groupTag    = $GroupTag
+        }
+        
+        $params = @{
+            Uri         = "deviceManagement/windowsAutopilotDeviceIdentities/$Id/UpdateDeviceProperties"
+            Method      = 'POST'
+            Body        = $body
+            AccessToken = $token
+            ApiVersion  = 'beta'
+        }
+        
+        return Invoke-GraphRequest @params
+    }
+    catch {
+        Write-Error "Failed to update Autopilot device: $($_.Exception.Message)"
+        throw
+    }
+}
+#endregion
+
+#region System Functions
+function Invoke-CmdLine {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$Application,
+        [Parameter(Mandatory = $true)][string]$ArgumentList,
+        [Parameter(Mandatory = $false)][switch]$Silent
+    )
+    
+    $output = if ($Silent) {
+        cmd /c "$Application $ArgumentList 2>&1"
+    } else {
+        cmd /c "$Application $ArgumentList"
+    }
+    
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code $LASTEXITCODE"
+    }
+    
+    return $output
+}
+
+function Set-PowerPolicy {
+    [CmdletBinding()]
+    param ([Parameter(Mandatory = $true)][ValidateSet('PowerSaver', 'Balanced', 'HighPerformance')][string]$PowerPlan)
+    
+    $planGuids = @{
+        PowerSaver      = "a1841308-3541-4fab-bc81-f71556f20b4a"
+        Balanced        = "381b4222-f694-41f0-9685-ff5bb260df2e"
+        HighPerformance = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+    }
+    
+    Write-Host "Setting power policy to '$PowerPlan'.." -ForegroundColor Cyan
+    Invoke-CmdLine -Application powercfg -ArgumentList "/s $($planGuids[$PowerPlan])" -Silent
+}
+
+function Test-IsUEFI {
+    [CmdletBinding()]
+    param()
+    
+    $pft = Get-ItemPropertyValue -Path HKLM:\SYSTEM\CurrentControlSet\Control -Name 'PEFirmwareType' -ErrorAction SilentlyContinue
+    
+    switch ($pft) {
+        1 { Write-Host "BIOS Mode detected.." -ForegroundColor Cyan; return "BIOS" }
+        2 { Write-Host "UEFI Mode detected.." -ForegroundColor Cyan; return "UEFI" }
+        default { Write-Host "BIOS / UEFI undetected.." -ForegroundColor Red; return $null }
+    }
+}
+#endregion
+
+#region Disk Functions
+function Get-DiskPartVolume {
+    [CmdletBinding()]
+    param ([Parameter(Mandatory = $false)][string]$WinPEDrive = "X:")
+    
+    $lvTxt = "$WinPEDrive\listvol.txt"
+    "List volume`nexit" | Out-File $lvTxt -Encoding ascii -Force -NoNewline
+    $dpOutput = Invoke-CmdLine -Application "diskpart" -ArgumentList "/s $lvTxt"
+    
+    $dpOutput[8..($dpOutput.length - 3)] | ForEach-Object {
+        $dr = $_.Substring(10, 6).Trim()
+        [PSCustomObject]@{
+            VolumeNum  = $_.Substring(0, 10).Trim()
+            DriveRoot  = if ($dr) { "$dr`:\" } else { $null }
+            Label      = $_.Substring(17, 13).Trim()
+            FileSystem = $_.Substring(30, 7).Trim()
+            Type       = $_.Substring(37, 12).Trim()
+            Size       = $_.Substring(49, 9).Trim()
+            Status     = $_.Substring(58, 11).Trim()
+        }
+    }
+}
+
+function Find-InstallWim {
+    [CmdletBinding()]
+    param ([Parameter(Mandatory = $true)][PSCustomObject[]]$VolumeInfo)
+    
+    foreach ($vol in $VolumeInfo) {
+        if ($vol.DriveRoot -and (Test-Path "$($vol.DriveRoot)images\install.wim")) {
+            Write-Host "Install.wim found on drive: $($vol.DriveRoot)" -ForegroundColor Cyan
+            return $vol
+        }
+    }
+    throw "Install.wim not found on any drives"
+}
+
+function Get-SystemDeviceId {
+    $dataDrives = $drives | Where-Object { $_.BusType -ne "USB" }
+    
+    if ($dataDrives.Count -eq 1) {
+        return $dataDrives[0].DeviceId
+    }
+    elseif ($dataDrives.Count -gt 1) {
+        Write-Host "Multiple disks detected. Select installation target:" -ForegroundColor Yellow
+        $dataDrives | Format-Table DeviceId, FriendlyName, Size | Out-Host
+        
+        do {
+            $selection = Read-Host "Enter Device ID"
+        } while ($selection -notin $dataDrives.DeviceId)
+        
+        return $selection
     }
     else {
-        #Continue
+        throw "No non-USB drives found for Windows installation"
     }
-
 }
-#region usb class
-class ImageUSBClass {
-    [string]$DataPath = $null
-    [string]$Drive = $null
-    [string]$DirName = "WinPE"
-    [string]$Drive2 = $null
-    [string]$DirName2 = "Images"
-    [string]$WinPEPath = $null
-    [string]$WIMPath = $null
-    [string]$WIMFilePath = $null
-    [string]$ImageIndexFilePath = $null
-    [string]$DriversPath = $null
-    [string]$PackagesPath = $null
-    ImageUSBClass ([string]$dataPath = $null) {
-        $this.DataPath = (Get-Item -Path $dataPath).FullName
-        if (!(Test-Path $this.DataPath -ErrorAction SilentlyContinue)) {
-            Write-Error -Message "Failed to find Intune USB Deployment Data!, run Publish-ImageToUSB.ps1 -createDataFolder"
-            Exit
+
+function Set-DrivePartition {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $false)][string]$WinPEDrive = "X:",
+        [Parameter(Mandatory = $true)][string]$TargetDrive
+    )
+    
+    $bootType = Test-IsUEFI
+    if (-not $bootType) { throw "Unable to detect boot type" }
+    
+    $winpartCmd = if ($bootType -eq "UEFI") {
+        @"
+select disk $TargetDrive
+clean
+convert gpt
+create partition efi size=100
+format quick fs=fat32 label="System"
+assign letter="S"
+create partition msr size=16
+create partition primary
+format quick fs=ntfs label="Windows"
+assign letter="W"
+shrink desired=950
+create partition primary
+format quick fs=ntfs label="Recovery"
+assign letter="R"
+set id="de94bba4-06d1-4d40-a16a-bfd50179d6ac"
+gpt attributes=0x8000000000000001
+exit
+"@
+    } else {
+        @"
+select disk $TargetDrive
+clean
+create partition primary size=100
+active
+format quick fs=fat32 label="System"
+assign letter="S"
+create partition primary
+format quick fs=ntfs label="Windows"
+assign letter="W"
+shrink desired=450
+create partition primary
+format quick fs=ntfs label="Recovery"
+assign letter="R"
+exit
+"@
+    }
+    
+    $txt = "$WinPEDrive\winpart.txt"
+    $winpartCmd | Out-File $txt -Encoding ascii -Force -NoNewline
+    Write-Host "Setting up partition table.." -ForegroundColor Cyan
+    Invoke-CmdLine -Application diskpart -ArgumentList "/s $txt" -Silent
+}
+
+function Add-Driver {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$ScratchDrive,
+        [Parameter(Mandatory = $true)][string]$DriverPath
+    )
+    
+    if (Get-ChildItem "$DriverPath\*.inf" -Recurse -ErrorAction SilentlyContinue) {
+        Write-Host "Adding drivers from: $DriverPath" -ForegroundColor Cyan
+        Invoke-CmdLine -Application "DISM" -ArgumentList "/Image:$ScratchDrive /Add-Driver /Driver:`"$DriverPath`" /Recurse"
+    } else {
+        Write-Host "No drivers found at: $DriverPath" -ForegroundColor Cyan
+    }
+}
+
+function Add-Package {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$ScratchDrive,
+        [Parameter(Mandatory = $true)][string]$ScratchPath,
+        [Parameter(Mandatory = $true)][string]$PackagePath
+    )
+    
+    if (Get-ChildItem $PackagePath -ErrorAction SilentlyContinue) {
+        Write-Host "Adding packages from: $PackagePath" -ForegroundColor Cyan
+        Invoke-CmdLine -Application "DISM" -ArgumentList "/Image:$ScratchDrive /Add-Package /PackagePath:$PackagePath /ScratchDir:$ScratchPath"
+    } else {
+        Write-Host "No packages found at: $PackagePath" -ForegroundColor Cyan
+    }
+}
+#endregion
+
+#region UI Functions
+function Show-Menu {
+    [CmdletBinding()]
+    param ([string]$Title = 'Choose an option')
+    
+    do {
+        Write-Host "`n================ $Title ================" -ForegroundColor Yellow
+        Write-Host "1: Exit" -ForegroundColor Green
+        Write-Host "2: Install Windows 11" -ForegroundColor Green
+        Write-Host "3: Install Windows 11 and Register Autopilot" -ForegroundColor Green
+        Write-Host "4: Register Autopilot" -ForegroundColor Green
+        
+        $input = Read-Host "`nEnter a number (1-4)"
+        if ($input -match '^[1-4]$') { return [int]$input }
+        
+        Write-Host "`nInvalid selection." -ForegroundColor Red
+        Start-Sleep -Seconds 2
+    } while ($true)
+}
+
+function Show-TenantSelection {
+    [CmdletBinding()]
+    param ([PSCustomObject[]]$Tenants)
+    
+    Write-Host "`n================ Choose a Tenant ================" -ForegroundColor Yellow
+    for ($i = 0; $i -lt $Tenants.Count; $i++) {
+        Write-Host "$($i + 1): $($Tenants[$i].name) ($($Tenants[$i].id))" -ForegroundColor Green
+    }
+    
+    do {
+        $input = Read-Host "`nEnter a number (1-$($Tenants.Count))"
+        if ($input -match "^\d+$" -and [int]$input -ge 1 -and [int]$input -le $Tenants.Count) {
+            return $Tenants[[int]$input - 1]
         }
-        $this.WinPEPath = Join-Path $this.DataPath -ChildPath "WinPE"
-        $this.DriversPath = Join-Path $this.DataPath -ChildPath "Drivers"
-        $this.PackagesPath = Join-Path $this.DataPath -ChildPath "Packages"
-        $this.WIMPath = Join-Path $this.DataPath -ChildPath "Images"
-        $this.WIMFilePath = "$($this.DataPath)\Images\install.wim"
-        $this.ImageIndexFilePath = "$($this.DataPath)\Images\imageIndex.json"
-    }
+        Write-Host "Invalid selection." -ForegroundColor Red
+    } while ($true)
 }
 
+function Show-WarningPrompt {
+    [CmdletBinding()]
+    param ([string]$Title = 'WARNING!!!')
+    
+    do {
+        Clear-Host
+        Write-Host "`n================ $Title ================" -ForegroundColor Red
+        Write-Host "`nThis will cause irreversible changes to your device!" -ForegroundColor Red
+        Write-Host "Continue? (Y/N)`n" -ForegroundColor Yellow
+        
+        $input = (Read-Host).Trim().ToUpper()
+        if ($input -eq 'Y') { return $true }
+        if ($input -eq 'N') { return $false }
+        
+        Write-Host "`nInvalid selection." -ForegroundColor Yellow
+        Start-Sleep -Seconds 2
+    } while ($true)
+}
 #endregion
 
 #region Main Process
 try {
-    #region start // show welcome
-    Clear-Host
     $errorMsg = $null
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $welcomebanner = "ICAgIOKWiOKWiOKVl+KWiOKWiOKWiOKVlyAgIOKWiOKWiOKVl+KWiOKWiOKWiOKWiOKWiOKWiOKWiOKWiOKVl+KWiOKWiOKVlyAgIOKWiOKWiOKVl+KWiOKWiOKWiOKVlyAgIOKWiOKWiOKVl+KWiOKWiOKWiOKWiOKWiOKWiOKWiOKVlyAgICAgCiAgICDilojilojilZHilojilojilojilojilZcgIOKWiOKWiOKVkeKVmuKVkOKVkOKWiOKWiOKVlOKVkOKVkOKVneKWiOKWiOKVkSAgIOKWiOKWiOKVkeKWiOKWiOKWiOKWiOKVlyAg4paI4paI4pWR4paI4paI4pWU4pWQ4pWQ4pWQ4pWQ4pWdICAgICAKICAgIOKWiOKWiOKVkeKWiOKWiOKVlOKWiOKWiOKVlyDilojilojilZEgICDilojilojilZEgICDilojilojilZEgICDilojilojilZHilojilojilZTilojilojilZcg4paI4paI4pWR4paI4paI4paI4paI4paI4pWXICAgICAgIAogICAg4paI4paI4pWR4paI4paI4pWR4pWa4paI4paI4pWX4paI4paI4pWRICAg4paI4paI4pWRICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4pWR4pWa4paI4paI4pWX4paI4paI4pWR4paI4paI4pWU4pWQ4pWQ4pWdICAgICAgIAogICAg4paI4paI4pWR4paI4paI4pWRIOKVmuKWiOKWiOKWiOKWiOKVkSAgIOKWiOKWiOKVkSAgIOKVmuKWiOKWiOKWiOKWiOKWiOKWiOKVlOKVneKWiOKWiOKVkSDilZrilojilojilojilojilZHilojilojilojilojilojilojilojilZcgICAgIAogICAg4pWa4pWQ4pWd4pWa4pWQ4pWdICDilZrilZDilZDilZDilZ0gICDilZrilZDilZ0gICAg4pWa4pWQ4pWQ4pWQ4pWQ4pWQ4pWdIOKVmuKVkOKVnSAg4pWa4pWQ4pWQ4pWQ4pWd4pWa4pWQ4pWQ4pWQ4pWQ4pWQ4pWQ4pWdICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAg4paI4paI4pWXICAg4paI4paI4pWX4paI4paI4paI4paI4paI4paI4paI4pWX4paI4paI4paI4paI4paI4paI4pWXICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICDilojilojilZEgICDilojilojilZHilojilojilZTilZDilZDilZDilZDilZ3ilojilojilZTilZDilZDilojilojilZcgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4paI4paI4paI4paI4paI4pWX4paI4paI4paI4paI4paI4paI4pWU4pWdICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgIOKWiOKWiOKVkSAgIOKWiOKWiOKVkeKVmuKVkOKVkOKVkOKVkOKWiOKWiOKVkeKWiOKWiOKVlOKVkOKVkOKWiOKWiOKVlyAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICDilZrilojilojilojilojilojilojilZTilZ3ilojilojilojilojilojilojilojilZHilojilojilojilojilojilojilZTilZ0gICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgIOKVmuKVkOKVkOKVkOKVkOKVkOKVnSDilZrilZDilZDilZDilZDilZDilZDilZ3ilZrilZDilZDilZDilZDilZDilZ0gICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAog4paI4paI4paI4paI4paI4paI4pWX4paI4paI4paI4paI4paI4paI4pWXIOKWiOKWiOKWiOKWiOKWiOKWiOKWiOKVlyDilojilojilojilojilojilZcg4paI4paI4paI4paI4paI4paI4paI4paI4pWXIOKWiOKWiOKWiOKWiOKWiOKWiOKVlyDilojilojilojilojilojilojilZcgCuKWiOKWiOKVlOKVkOKVkOKVkOKVkOKVneKWiOKWiOKVlOKVkOKVkOKWiOKWiOKVl+KWiOKWiOKVlOKVkOKVkOKVkOKVkOKVneKWiOKWiOKVlOKVkOKVkOKWiOKWiOKVl+KVmuKVkOKVkOKWiOKWiOKVlOKVkOKVkOKVneKWiOKWiOKVlOKVkOKVkOKVkOKWiOKWiOKVl+KWiOKWiOKVlOKVkOKVkOKWiOKWiOKVlwrilojilojilZEgICAgIOKWiOKWiOKWiOKWiOKWiOKWiOKVlOKVneKWiOKWiOKWiOKWiOKWiOKVlyAg4paI4paI4paI4paI4paI4paI4paI4pWRICAg4paI4paI4pWRICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4paI4paI4paI4paI4pWU4pWdCuKWiOKWiOKVkSAgICAg4paI4paI4pWU4pWQ4pWQ4paI4paI4pWX4paI4paI4pWU4pWQ4pWQ4pWdICDilojilojilZTilZDilZDilojilojilZEgICDilojilojilZEgICDilojilojilZEgICDilojilojilZHilojilojilZTilZDilZDilojilojilZcK4pWa4paI4paI4paI4paI4paI4paI4pWX4paI4paI4pWRICDilojilojilZHilojilojilojilojilojilojilojilZfilojilojilZEgIOKWiOKWiOKVkSAgIOKWiOKWiOKVkSAgIOKVmuKWiOKWiOKWiOKWiOKWiOKWiOKVlOKVneKWiOKWiOKVkSAg4paI4paI4pWRCiDilZrilZDilZDilZDilZDilZDilZ3ilZrilZDilZ0gIOKVmuKVkOKVneKVmuKVkOKVkOKVkOKVkOKVkOKVkOKVneKVmuKVkOKVnSAg4pWa4pWQ4pWdICAg4pWa4pWQ4pWdICAgIOKVmuKVkOKVkOKVkOKVkOKVkOKVnSDilZrilZDilZ0gIOKVmuKVkOKVnQ=="
-    Write-Host `n$([system.text.encoding]::UTF8.GetString([system.convert]::FromBase64String($welcomebanner)))
-
-    #endregion
-    #region set usb class
-    Write-Host "`nSetting up configuration paths..." -ForegroundColor Yellow
-    $usb = [ImageUSBClass]::new($dataPath)
-    #endregion
-    #region choose and partition USB
-    Write-Host "`nConfiguring USB..." -ForegroundColor Yellow
-
-    $chooseDisk = Get-DiskToUse
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $usb = [USBImage]::new($env:SystemDrive)
     
-    $usb = Set-USBPartition -usbClass $usb -diskNum $chooseDisk
-
-    #endregion
-    #region write WinPE to USB
-    Write-Host "`nWriting WinPE to USB..." -ForegroundColor Yellow -NoNewline
-    Write-ToUSB -Path "$($usb.winPEPath)\*" -Destination "$($usb.drive):\"
-    #endregion
-    #region write Install.wim to USB
-    Write-Host "`nWriting Install.wim to USB..." -ForegroundColor Yellow -NoNewline
-    Write-ToUSB -Path $usb.WIMPath -Destination "$($usb.drive2):\"
-    #endregion
-      
-    #region Create drivers folder
-    Write-Host "`nSetting up folder structures for Drivers..." -ForegroundColor Yellow -NoNewline
-    New-Item -Path "$($usb.drive2):\Drivers" -ItemType Directory -Force | Out-Null
-
-    Write-Host "`nWriting Drivers to USB..." -ForegroundColor Yellow -NoNewline
-    Write-ToUSB -Path "$($usb.DriversPath)\*" -Destination "$($usb.drive2):\Drivers"
-    #endregion
-		
-    #region Create packages folder
-    Write-Host "`nSetting up folder structures for Packages..." -ForegroundColor Yellow -NoNewline
-    New-Item -Path "$($usb.drive2):\Packages" -ItemType Directory -Force | Out-Null
-
-    Write-Host "`nWriting Packages to USB..." -ForegroundColor Yellow -NoNewline
-    Write-ToUSB -Path "$($usb.PackagesPath)\*" -Destination "$($usb.drive2):\Packages"
-    #endregion
-		
+    # Bootstrap WinPE drivers
+    $deviceModel = (Get-CimInstance -ClassName Win32_ComputerSystem).Model
+    Write-Host "`nDevice Model: $deviceModel" -ForegroundColor Yellow
+    
+    $drivers = Get-ChildItem "$($usb.driverPath)\WinPE" -Filter *.inf -Recurse -ErrorAction SilentlyContinue
+    if ($drivers) {
+        Write-Host "Bootstrapping WinPE drivers..." -ForegroundColor Yellow
+        $drivers | ForEach-Object { drvload $_.FullName }
+    }
+    
+    # Set power policy
+    Set-PowerPolicy -PowerPlan HighPerformance
+    
+    # Show welcome banner
+    Clear-Host
+    Write-Host $([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($welcomebanner)))
+    
+    # Tenant selection
+    if ($tenants.Count -gt 1) {
+        $tenant = Show-TenantSelection -Tenants $tenants
+    } else {
+        $tenant = $tenants[0]
+    }
+    
+    $tenantid = $tenant.id
+    $groupTag = $tenant.groupTag
+    $graphclientid = $tenant.graphclientid
+    $graphsecret = $tenant.graphsecret
+    
+    # Show menu
+    Clear-Host
+    Write-Host $([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($welcomebanner)))
+    $userChoice = Show-Menu
+    
+    $autoPilot = $false
+    $skipInstall = $false
+    $exitEarly = $false
+    
+    switch ($userChoice) {
+        1 {
+            $exitEarly = $true
+            throw "User cancelled operation"
+        }
+        2 {
+            if (-not (Show-WarningPrompt)) {
+                $exitEarly = $true
+                throw "User cancelled operation"
+            }
+        }
+        3 {
+            if (Show-WarningPrompt) {
+                $autoPilot = $true
+            } else {
+                $exitEarly = $true
+                throw "User cancelled operation"
+            }
+        }
+        4 {
+            $skipInstall = $true
+            $autoPilot = $true
+        }
+    }
+    
+    # Autopilot registration
+    if ($autoPilot) {
+        if (Test-Path X:\Windows\System32\PCPKsp.dll) {
+            Invoke-CmdLine -Application rundll32 -ArgumentList "X:\Windows\System32\PCPKsp.dll, DllInstall"
+        }
+        
+        Set-Location $PSScriptRoot
+        Write-Host "`nRegistering device to Autopilot..." -ForegroundColor Cyan
+        
+        if (Test-Path "$PSScriptRoot\OA3.xml") {
+            Remove-Item "$PSScriptRoot\OA3.xml" -Force
+        }
+        
+        $SerialNumber = (Get-CimInstance -Class Win32_BIOS).SerialNumber
+        Write-Host "Serial Number: $SerialNumber" -ForegroundColor Cyan
+        
+        $dev = Get-AutopilotDevice -SerialNumber $SerialNumber -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+        
+        if ($dev) {
+            $computerName = $dev.displayName
+            Write-Host "$computerName already registered in Autopilot!" -ForegroundColor Yellow
+        } else {
+            & "$PSScriptRoot\oa3tool.exe" /Report /ConfigFile="$PSScriptRoot\OA3.cfg" /NoKeyCheck
+            
+            if (Test-Path "$PSScriptRoot\OA3.xml") {
+                [xml]$xmlhash = Get-Content "$PSScriptRoot\OA3.xml"
+                $DeviceHashData = $xmlhash.Key.HardwareHash
+                Remove-Item "$PSScriptRoot\OA3.xml" -Force
+                
+                Add-AutopilotImportedDevice -SerialNumber $SerialNumber -HardwareIdentifier $DeviceHashData -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+                
+                Write-Host "Waiting for Autopilot registration..." -ForegroundColor Cyan
+                Start-Sleep -Seconds 15
+                
+                while ($null -eq $dev) {
+                    $dev = Get-AutopilotDevice -SerialNumber $SerialNumber -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+                    if ($null -eq $dev) { Start-Sleep -Seconds 5 }
+                }
+                Write-Host "Device registered: $($dev.id)" -ForegroundColor Green
+            }
+        }
+        
+        if ($computerName) {
+            $input = Read-Host "Enter Computer Name (Current: $computerName, press Enter to keep)"
+            if ($input) { $computerName = $input }
+        } else {
+            $computerName = Read-Host "Enter Computer Name"
+        }
+        
+        Set-AutopilotDevice -Id $dev.id -DisplayName $computerName -GroupTag $groupTag -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+        Write-Host "Device name set to: $computerName" -ForegroundColor Green
+    }
+    
+    # Windows installation
+    if (-not $skipInstall) {
+        $drives = @(Get-PhysicalDisk)
+        $targetDrive = Get-SystemDeviceId
+        Set-DrivePartition -WinPEDrive $usb.winPEDrive -TargetDrive $targetDrive
+        
+        Write-Host "`nSetting up paths..." -ForegroundColor Yellow
+        $usb.SetScratch("W:\recycler\scratch")
+        $usb.SetRecovery("R:\RECOVERY\WINDOWSRE")
+        New-Item -Path $usb.scratch.FullName -ItemType Directory -Force | Out-Null
+        New-Item -Path $usb.recovery.FullName -ItemType Directory -Force | Out-Null
+        
+        Write-Host "`nApplying Windows image..." -ForegroundColor Yellow
+        $imageIndex = Get-Content "$($usb.installPath)\imageIndex.json" | ConvertFrom-Json
+        Invoke-CmdLine -Application "DISM" -ArgumentList "/Apply-Image /ImageFile:$($usb.installPath)\install.wim /Index:$($imageIndex.imageIndex) /ApplyDir:$($usb.scRoot) /EA /ScratchDir:$($usb.scratch)"
+        
+        # Recovery environment
+        $reWimPath = "$($usb.scRoot)Windows\System32\recovery\winre.wim"
+        if (Test-Path $reWimPath) {
+            Write-Host "`nConfiguring recovery environment..." -ForegroundColor Yellow
+            (Get-ChildItem $reWimPath -Force).Attributes = "NotContentIndexed"
+            Move-Item $reWimPath "$($usb.recovery.FullName)\winre.wim"
+            
+            if (Get-ChildItem "$($usb.driverPath)\$deviceModel\storage\*.inf" -Recurse -ErrorAction SilentlyContinue) {
+                New-Item "W:\Temp" -ItemType Directory | Out-Null
+                Invoke-CmdLine -Application "DISM" -ArgumentList "/Mount-Image /ImageFile:$($usb.recovery.FullName)\winre.wim /Index:1 /MountDir:W:\temp"
+                Add-Driver -DriverPath "$($usb.driverPath)\$deviceModel\storage" -ScratchDrive "W:\temp"
+                Invoke-CmdLine -Application "DISM" -ArgumentList "/Unmount-Image /MountDir:w:\temp /Commit"
+                Remove-Item "W:\temp" -Force -Recurse
+            }
+            
+            (Get-ChildItem "$($usb.recovery.FullName)\winre.wim" -Force).Attributes = "ReadOnly", "Hidden", "System", "Archive", "NotContentIndexed"
+            Invoke-CmdLine -Application "$($usb.scRoot)Windows\System32\reagentc" -ArgumentList "/SetREImage /Path $($usb.recovery.FullName) /target $($usb.scRoot)Windows" -Silent
+        }
+        
+        # Boot environment
+        Write-Host "`nConfiguring boot environment..." -ForegroundColor Yellow
+        Invoke-CmdLine -Application "$($usb.scRoot)Windows\System32\bcdboot" -ArgumentList "$($usb.scRoot)Windows /s s: /f all"
+        
+        # Copy unattended.xml
+        if (Test-Path "$($usb.winPESource)scripts\unattended.xml") {
+            Write-Host "Copying unattended.xml..." -ForegroundColor Cyan
+            if (-not (Test-Path "$($usb.scRoot)Windows\Panther")) {
+                New-Item "$($usb.scRoot)Windows\Panther" -ItemType Directory -Force | Out-Null
+            }
+            Copy-Item "$($usb.winPESource)\scripts\unattended.xml" "$($usb.scRoot)Windows\Panther\unattended.xml"
+        }
+        
+        # Copy provisioning packages
+        if (Test-Path "$($usb.winPESource)scripts\*.ppkg") {
+            Write-Host "Copying provisioning packages..." -ForegroundColor Cyan
+            Copy-Item "$($usb.winPESource)\scripts\*.ppkg" "$($usb.scRoot)Windows\Panther\"
+        }
+        
+        # Remove public shortcuts
+        Remove-Item "$($usb.scRoot)Users\public\Desktop\*.lnk" -Force -ErrorAction SilentlyContinue
+        
+        # Apply drivers
+        if (Get-ChildItem "$($usb.driverPath)\$deviceModel\*.inf" -Recurse -ErrorAction SilentlyContinue) {
+            Write-Host "`nApplying device drivers..." -ForegroundColor Yellow
+            Add-Driver -DriverPath "$($usb.driverPath)\$deviceModel" -ScratchDrive $usb.scRoot
+        }
+        
+        # Apply packages
+        if (Get-ChildItem "$($usb.packagePath)\*.cab" -Recurse -ErrorAction SilentlyContinue) {
+            Write-Host "`nApplying packages..." -ForegroundColor Yellow
+            Add-Package -PackagePath "$($usb.packagePath)\" -ScratchDrive $usb.scRoot -ScratchPath $usb.scratch
+        }
+    }
+    
     $completed = $true
 }
 catch {
@@ -1031,16 +1016,16 @@ catch {
 }
 finally {
     $sw.Stop()
-    if ($errorMsg) {
-        Write-Warning $errorMsg
+    
+    if ($exitEarly) {
+        $errorMsg = $null
     }
-    else {
-        if ($completed) {
-            Write-Host "`nUSB Image built successfully..`nTime taken: $($sw.Elapsed)" -ForegroundColor Green
-        }
-        else {
-            Write-Host "`nScript stopped before completion..`nTime taken: $($sw.Elapsed)" -ForegroundColor Green
-        }
+    
+    if ($errorMsg) {
+        Write-Host "`nERROR: $errorMsg" -ForegroundColor Red
+    } else {
+        $status = if ($completed) { "completed" } else { "stopped prematurely" }
+        Write-Host "`nProvisioning $status. Time taken: $($sw.Elapsed)" -ForegroundColor Green
     }
 }
 #endregion
