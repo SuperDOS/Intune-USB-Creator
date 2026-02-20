@@ -151,7 +151,9 @@ if (!$createDataFolder) {
             
             # Determine deployment type
             if ($IUClog.PSObject.Properties.Match('deploymentType') -and $IUClog.deploymentType) {
-                $useWinREImage = ($IUClog.deploymentType -eq "WinRE")
+                if ($IUClog.deploymentType -eq "WinRE") {
+                    $useWinRE = $true
+                }
                 
                 Write-Host "Deployment Type: $($IUClog.deploymentType)" -ForegroundColor Cyan
                 if ($IUClog.imageindex) {
@@ -166,7 +168,7 @@ if (!$createDataFolder) {
                 # Legacy deployment (before deploymentType was added)
                 Write-Warning "Legacy deployment detected (no type metadata)"
                 Write-Warning "Assuming WinPE deployment"
-                $useWinREImage = $false
+                $useWinRE = $false
             }
         }
         catch {
@@ -207,88 +209,6 @@ if (!$createDataFolder) {
     }
     
     Write-Host "All required files present" -ForegroundColor Green
-    
-    # Configure WiFi if this is a WinRE deployment
-    if ($useWinREImage) {
-        Write-Host "`nConfiguring WiFi for WinRE deployment..." -ForegroundColor Cyan
-        
-        $scriptsPath = Join-Path $dataPath "WinPE\Scripts"
-        
-        # Configure Main.cmd - uncomment WiFi lines and replace SSID
-        $mainCmdPath = Join-Path $scriptsPath "Main.cmd"
-        if (Test-Path $mainCmdPath) {
-            $mainCmdContent = Get-Content -Path $mainCmdPath -Raw
-            
-            # Replace WiFi SSID placeholder
-            if ($wifissid) {
-                # Uncomment WiFi lines (remove REM from start of lines)
-                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (net start wlansvc)', '$1'
-                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (netsh wlan add profile)', '$1'
-                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (netsh wlan connect)', '$1'
-                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (ping localhost)', '$1'
-            
-                # Replace SSID
-                $mainCmdContent = $mainCmdContent.Replace("@WIFISSID", $wifissid)
-            
-                # Save changes
-                Set-Content -Path $mainCmdPath -Value $mainCmdContent
-                Write-Host "  - Main.cmd configured with WiFi SSID" -ForegroundColor Green
-            }
-            else {
-                Write-Warning "  - WiFi SSID not configured in GLOBAL_PARAM.json"
-                Write-Warning "    WiFi will not connect automatically"
-            }
-        
-        }
-        else {
-            Write-Warning "  - Main.cmd not found - WiFi configuration skipped"
-        }
-        
-        # Configure wificonf.xml - replace SSID and password
-        $wifiConfPath = Join-Path $scriptsPath "wificonf.xml"
-        if (Test-Path $wifiConfPath) {
-            $wifiConfContent = Get-Content -Path $wifiConfPath -Raw
-            
-            # Replace WiFi placeholders    
-            $replacements = @{
-                "@WIFISSD" = $wifissid
-                "@WIFIPWD" = $wifipwd
-                "@WIFISEC" = if ($wifisecuritytype) { $wifisecuritytype } else { "WPA2PSK" }
-            }
-
-            $missing = @()
-            $changed = $false
-
-            foreach ($key in $replacements.Keys) {
-                $value = $replacements[$key]
-
-                if ([string]::IsNullOrWhiteSpace($value)) {
-                    $missing += $key
-                    continue
-                }
-
-                $wifiConfContent = $wifiConfContent.Replace($key, $value)
-                $changed = $true
-            }
-
-            if ($missing.Count -gt 0) {
-                Write-Warning "  - Missing WiFi parameters: $($missing -join ', ') in GLOBAL_PARAM.json"
-            }
-
-            if ($changed) {
-                Set-Content -Path $wifiConfPath -Value $wifiConfContent
-                Write-Host "  - wificonf.xml configured with credentials" -ForegroundColor Green
-            }
-            else {
-                Write-Warning "  - WiFi configuration not updated (no valid values provided)"
-            }
-
-        }
-        else {
-            Write-Warning "  - wificonf.xml not found - WiFi may not work"
-        }
-
-    }
 }
 #endregion
 
@@ -620,13 +540,11 @@ if ($createDataFolder) {
     if ($buildwinpemedia) {
            
         #region Check for WinRE.wim - use extracted if available
-        $useWinREImage = $false
         $sourceWimPath = $null
         
         if ($useWinRE -and $extractedWinREPath -and (Test-Path $extractedWinREPath)) {
             Write-Host "`nUsing extracted WinRE.wim from install.wim" -ForegroundColor Green
             $sourceWimPath = $extractedWinREPath
-            $useWinREImage = $true
         }
         #endregion
            
@@ -647,7 +565,7 @@ if ($createDataFolder) {
             $winpemedia = "$winPEpath\Media\"
             $packagepath = "$winPEpath\WinPE_OCs\"
             
-            if ($useWinREImage) {
+            if ($useWinRE) {
                 Write-Host "ADK found - using WinRE.wim with optional components available" -ForegroundColor Green
             }
             else {
@@ -688,7 +606,7 @@ if ($createDataFolder) {
             }
             
             if ($copiedFiles -gt 0) {
-                if ($useWinREImage) {
+                if ($useWinRE) {
                     Write-Host "Essential boot files copied for WinRE ($copiedFiles/$($bootFiles.Count))" -ForegroundColor Green
                 }
                 else {
@@ -707,7 +625,7 @@ if ($createDataFolder) {
 
         # Validate source WIM path
         if (-not (Test-Path $sourceWimPath)) {
-            if ($useWinREImage) {
+            if ($useWinRE) {
                 Write-Error "WinRE.wim file does not exist at: $sourceWimPath" -ErrorAction "Stop"
             }
             else {
@@ -716,7 +634,7 @@ if ($createDataFolder) {
         }
 
         # Copy the source wim (either WinRE or WinPE)
-        if ($useWinREImage) {
+        if ($useWinRE) {
             Write-Host "Copying WinRE.wim to boot.wim..." -ForegroundColor Cyan
         }
         else {
@@ -739,7 +657,7 @@ if ($createDataFolder) {
             Mount-WindowsImage -Path $peMount -ImagePath $newWIMPath -Index 1 | Out-Null
     
             # Delete winpeshl.ini if using WinRE (allows normal boot process)
-            if ($useWinREImage) {
+            if ($useWinRE) {
                 $winpeshlPath = Join-Path $peMount "Windows\System32\winpeshl.ini"
                 if (Test-Path $winpeshlPath) {
                     Write-Host "Removing winpeshl.ini from WinRE for proper boot..." -ForegroundColor Cyan
@@ -776,7 +694,7 @@ if ($createDataFolder) {
             }
             
             # Configure custom background for WinRE
-            if ($useWinREImage) {
+            if ($useWinRE) {
                 $winpeJpgPath = "$peMount\Windows\System32\winpe.jpg"
                 $winreJpgPath = "$peMount\Windows\System32\winre.jpg"
                 
@@ -839,7 +757,7 @@ if ($createDataFolder) {
                     Add-WinPEPackage -MountPath $peMount -Package $Component -PackagePath $packagepath
                 }
             }
-            elseif ($useWinREImage) {
+            elseif ($useWinRE) {
                 Write-Host "Skipping optional components - ADK not available or WinRE already has required components" -ForegroundColor Yellow
             }
             else {
@@ -881,7 +799,7 @@ if ($createDataFolder) {
         }
        
         # Report completion
-        if ($useWinREImage) {
+        if ($useWinRE) {
             Write-Host "Boot image generated from WinRE.wim: $peNew" -ForegroundColor Green
         }
         else {
@@ -926,7 +844,7 @@ if ($createDataFolder) {
 
     # Update deployment metadata in IUC-log
     $IUClog.imageindex = $selectedImageIndex
-    $IUClog.deploymentType = if ($useWinREImage) { "WinRE" } else { "WinPE" }
+    $IUClog.deploymentType = if ($useWinRE) { "WinRE" } else { "WinPE" }
     
     #We are done - save IUC-log
     $IUClog | ConvertTo-Json | Set-Content -Path "$dataPath\IUC-log.json" -Encoding utf8
@@ -1003,6 +921,89 @@ try {
     Write-Host "`nWriting WinPE to USB..." -ForegroundColor Yellow -NoNewline
     Write-ToUSB -Path "$($usb.winPEPath)\*" -Destination "$($usb.drive):\"
     #endregion
+
+    # Configure WiFi if this is a WinRE deployment
+    if ($useWinRE) {
+        Write-Host "`nConfiguring WiFi for WinRE deployment..." -ForegroundColor Cyan
+        
+        $scriptsPath = "$($usb.drive):\Scripts"
+        
+        # Configure Main.cmd - uncomment WiFi lines and replace SSID
+        $mainCmdPath = Join-Path $scriptsPath "Main.cmd"
+        if (Test-Path $mainCmdPath) {
+            $mainCmdContent = Get-Content -Path $mainCmdPath -Raw
+            
+            # Replace WiFi SSID placeholder
+            if (![string]::IsNullOrWhiteSpace($wifissid)) {
+                # Uncomment WiFi lines (remove REM from start of lines)
+                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (net start wlansvc)', '$1'
+                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (netsh wlan add profile)', '$1'
+                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (netsh wlan connect)', '$1'
+                $mainCmdContent = $mainCmdContent -replace '(?m)^REM (ping localhost)', '$1'
+            
+                # Replace SSID
+                $mainCmdContent = $mainCmdContent.Replace("@WIFISSID", $wifissid)
+            
+                # Save changes
+                Set-Content -Path $mainCmdPath -Value $mainCmdContent
+                Write-Host "  - Main.cmd configured with WiFi SSID" -ForegroundColor Green
+            }
+            else {
+                Write-Warning "  - WiFi SSID not configured in GLOBAL_PARAM.json"
+                Write-Warning "    WiFi will not connect automatically"
+            }
+        
+        }
+        else {
+            Write-Warning "  - Main.cmd not found - WiFi configuration skipped"
+        }
+        
+        # Configure wificonf.xml - replace SSID and password
+        $wifiConfPath = Join-Path $scriptsPath "wificonf.xml"
+        if (Test-Path $wifiConfPath) {
+            $wifiConfContent = Get-Content -Path $wifiConfPath -Raw
+            
+            # Replace WiFi placeholders    
+            $replacements = @{
+                "@WIFISSID" = $wifissid
+                "@WIFIPWD"  = $wifipwd
+                "@WIFISEC"  = if ($wifisecuritytype) { $wifisecuritytype } else { "WPA2PSK" }
+            }
+
+            $missing = @()
+            $changed = $false
+
+            foreach ($key in $replacements.Keys) {
+                $value = $replacements[$key]
+
+                if ([string]::IsNullOrWhiteSpace($value)) {
+                    $missing += $key
+                    continue
+                }
+
+                $wifiConfContent = $wifiConfContent.Replace($key, $value)
+                $changed = $true
+            }
+
+            if ($missing.Count -gt 0) {
+                Write-Warning "  - Missing WiFi parameters: $($missing -join ', ') in GLOBAL_PARAM.json"
+            }
+
+            if ($changed) {
+                Set-Content -Path $wifiConfPath -Value $wifiConfContent
+                Write-Host "  - wificonf.xml configured with credentials" -ForegroundColor Green
+            }
+            else {
+                Write-Warning "  - WiFi configuration not updated (no valid values provided)"
+            }
+
+        }
+        else {
+            Write-Warning "  - wificonf.xml not found - WiFi may not work"
+        }
+
+    }
+
     #region write Install.wim to USB
     Write-Host "`nWriting Install.wim to USB..." -ForegroundColor Yellow -NoNewline
     Write-ToUSB -Path $usb.WIMPath -Destination "$($usb.drive2):\"
