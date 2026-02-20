@@ -1,10 +1,8 @@
 title INTUNE USB DEPLOYMENT
 
 ::Load WinPE Drivers
-for /r "%~dp0WinPE" %%F in (*.inf) do (
-    echo Loading WinPE driver: %%F
-    drvload "%%F"
-)
+echo Loading WinPE drivers using DISM...
+dism /online /add-driver /driver:"%WinPESource%Drivers\WinPE" /recurse
 
 ::WiFi Support using WinRE
 REM net start wlansvc
