@@ -593,7 +593,7 @@ if ($createDataFolder) {
             
             # Copy only essential boot files (bootmgr, bootmgr.efi, boot folder)
             # No need to copy language files and other media that aren't needed
-            $bootFiles = @("bootmgr", "bootmgr.efi", "boot")
+            $bootFiles = @("bootmgr", "bootmgr.efi", "boot", "EFI")
             $copiedFiles = 0
             
             foreach ($bootFile in $bootFiles) {
