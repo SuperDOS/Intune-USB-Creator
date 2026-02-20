@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
-    <name>@WIFISSD</name>
+    <name>@WIFISSID</name>
     <SSIDConfig>
         <SSID>
-            <name>@WIFISSD</name>
+            <name>@WIFISSID</name>
         </SSID>
     </SSIDConfig>
     <connectionType>ESS</connectionType>
