@@ -823,16 +823,10 @@ try {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $usb = [USBImage]::new($env:SystemDrive)
     
-    # Bootstrap WinPE drivers
+    # Display device information
     $deviceModel = (Get-CimInstance -ClassName Win32_ComputerSystem).Model
     Write-Host "`nDevice Model: $deviceModel" -ForegroundColor Yellow
-    
-    $drivers = Get-ChildItem "$($usb.driverPath)\WinPE" -Filter *.inf -Recurse -ErrorAction SilentlyContinue
-    if ($drivers) {
-        Write-Host "Bootstrapping WinPE drivers..." -ForegroundColor Yellow
-        $drivers | ForEach-Object { drvload $_.FullName }
-    }
-    
+        
     # Set power policy
     Set-PowerPolicy -PowerPlan HighPerformance
     
