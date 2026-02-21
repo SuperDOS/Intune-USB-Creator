@@ -1,80 +1,61 @@
 @echo off
-@rem 
-@rem  Capture the START time so we can evaluate total WinPE phase time.
-@rem
-@rem  Set the power scheme to High Performance.
-@echo Set High Performance Power Scheme...
+setlocal enabledelayedexpansion
+
+:: Set High Performance Power Scheme [cite: 2]
 powercfg /s 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 
 @echo Starting timer...
 call |time>x:\starttime.txt
-@echo.
-@rem  *****************************************************************
-@rem  Script to deploy an image on a target device in a standard configuration
-@rem  Stop in Audit mode for customization and then automatically capture.
-@rem  *****************************************************************
-@rem Initialize WinPE
-@echo wpeinit
+
+:: Initialize WinPE [cite: 4]
+@echo Initializing WinPE (wpeinit)...
 wpeinit
-@echo.
-@echo.
+
 @echo.
 @echo *****************************************************************
-@rem  Get the USB Drive letter of the device we booted WinPE from
+@echo  Searching for USB Partitions...
 @echo *****************************************************************
-@echo call wpeutil UpdateBootInfo
-wpeutil UpdateBootInfo
-@echo.
-set WinPEREG="HKLM\System\CurrentControlSet\Control"
-set WinPEKey=PEBootRamdiskSourceDrive
+
 set WinPESource=
+set DriverSource=
+
+:: Loop through drive letters to find our tag files
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do (
+    if exist "%%D:\WINPE.tag" (
+        set "WinPESource=%%D:"
+        echo Found Boot Partition: !WinPESource!
+    )
+    if exist "%%D:\DRIVERS.tag" (
+        set "DriverSource=%%D:\Drivers"
+        echo Found Driver Partition: !DriverSource!
+    )
+)
+
+:: Validation
+if "%WinPESource%"=="" (
+    echo ERROR: Could not find WINPE.tag on any drive.
+    goto :ERROR
+)
+
+if "%DriverSource%"=="" (
+    echo WARNING: Driver partition not found.
+    echo Main.cmd may fail to load drivers.
+)
+
 @echo.
-@rem Get volume letter of USB Key
-@echo for /f "skip=2 tokens=3" %%A in ('call Reg query %WinPEREG% /v %WinPEKEY%') do set WinPESource=%%A
-for /f "skip=2 tokens=3" %%A in ('call Reg query %WinPEREG% /v %WinPEKEY%') do set WinPESource=%%A
-@echo WinPESource is drive letter "%WinPESource%"
-@echo.
-@echo.
-@echo.
-if "%WinPESource%"=="" echo Drive letter NOT found.&& call :FindDrive
-echo WinPESource is "%WinPESource%"
-echo.
 @echo *****************************************************************
-@echo  Call and run main.cmd on the USB Key
+@echo  Launching Main Deployment Script
 @echo *****************************************************************
-@echo call %WinPESource%Scripts\main.cmd
-call %WinPESource%Scripts\main.cmd
-@echo.
-@echo.
-@echo.
-@echo *****************************************************************
-@echo  Image deployment COMPLETE. Type EXIT from Command
-@echo  Prompt to restart or turn off device.
-@echo *****************************************************************
-goto :END
+:: Pass the detected paths to Main.cmd 
+call "%WinPESource%\Scripts\Main.cmd"
+
+:END
+@echo Deployment Phase Finished.
+pause
+exit
 
 :ERROR
 @echo.
-@echo An error has been detected.
+@echo [!] FATAL ERROR: Deployment environment not detected.
 @echo. 
+pause
 goto :END
-
-:FindDrive
-echo.
-echo Trying to find drive letter using diskpart
-echo.
-echo Lis Vol>x:\FindVol.txt
-echo.
-echo Running Diskpart to get Volume letters
-echo.
-diskpart /s x:\FindVol.txt>x:\VolumeList.txt
-echo.
-echo Parsing list to find WinPE
-echo.
-for /f "skip=8 tokens=3-4" %%A in (x:\VolumeList.txt) do (
-echo Checking drive letter %%A has volume label of %%B
-if /i "%%B"=="WINPE" set WinPESource=%%A
-)
-set WinPESource=%WinPESource%:\
-goto :EOF
-
-:END
