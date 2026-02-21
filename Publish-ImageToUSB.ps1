@@ -920,6 +920,7 @@ try {
     #region write WinPE to USB
     Write-Host "`nWriting WinPE to USB..." -ForegroundColor Yellow -NoNewline
     Write-ToUSB -Path "$($usb.winPEPath)\*" -Destination "$($usb.drive):\"
+    New-Item -Path "$($usb.drive):\WINPE.tag" -ItemType File -Force | Out-Null
     #endregion
 
     # Configure WiFi if this is a WinRE deployment
@@ -935,6 +936,9 @@ try {
             
             # Replace WiFi SSID placeholder
             if (![string]::IsNullOrWhiteSpace($wifissid)) {
+                # Update the WiFiEnabled variable
+                $mainCmdContent = $mainCmdContent -replace 'SET WiFiEnabled=FALSE', 'SET WiFiEnabled=TRUE'
+
                 # Uncomment WiFi lines (remove REM from start of lines)
                 $mainCmdContent = $mainCmdContent -replace '(?m)^REM (net start wlansvc)', '$1'
                 $mainCmdContent = $mainCmdContent -replace '(?m)^REM (netsh wlan add profile)', '$1'
@@ -1012,6 +1016,7 @@ try {
     #region Create drivers folder
     Write-Host "`nSetting up folder structures for Drivers..." -ForegroundColor Yellow -NoNewline
     New-Item -Path "$($usb.drive2):\Drivers" -ItemType Directory -Force | Out-Null
+    New-Item -Path "$($usb.drive2):\DRIVERS.tag" -ItemType File -Force | Out-Null
 
     Write-Host "`nWriting Drivers to USB..." -ForegroundColor Yellow -NoNewline
     Write-ToUSB -Path "$($usb.DriversPath)\*" -Destination "$($usb.drive2):\Drivers"
