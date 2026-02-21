@@ -25,7 +25,7 @@ for %%D in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do (
         echo Found Boot Partition: !WinPESource!
     )
     if exist "%%D:\DRIVERS.tag" (
-        set "DriverSource=%%D:\Drivers"
+        set "DriverSource=%%D:\Drivers\WinPE"
         echo Found Driver Partition: !DriverSource!
     )
 )
