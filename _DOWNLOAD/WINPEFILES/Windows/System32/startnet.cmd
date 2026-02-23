@@ -38,8 +38,18 @@ if "%WinPESource%"=="" (
 
 if "%DriverSource%"=="" (
     echo WARNING: Driver partition not found.
-    echo Main.cmd may fail to load drivers.
 )
+
+:: -------------------------------------------------
+:: Load drivers 
+:: -------------------------------------------------
+if "%DriverSource%"=="" goto :SKIP_DRIVERS
+echo [INFO] Loading drivers from: %DriverSource%
+for /r "%DriverSource%" %%F in (*.inf) do (
+    echo Loading: %%F
+    drvload "%%F" >nul
+)
+:SKIP_DRIVERS
 
 @echo.
 @echo *****************************************************************
