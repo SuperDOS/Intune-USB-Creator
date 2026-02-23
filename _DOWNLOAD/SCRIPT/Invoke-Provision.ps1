@@ -131,8 +131,8 @@ function Get-GraphToken {
         
         # Cache the token with expiry information
         $script:GraphTokenCache[$cacheKey] = @{
-            Token   = $response.access_token
-            Expiry  = (Get-Date).AddSeconds($response.expires_in)
+            Token    = $response.access_token
+            Expiry   = (Get-Date).AddSeconds($response.expires_in)
             Obtained = Get-Date
         }
         
@@ -352,77 +352,127 @@ function Invoke-GraphRequest {
 function Get-AutopilotDevice {
     <#
     .SYNOPSIS
-        Retrieves Windows Autopilot device(s) from Intune.
-    
+        Retrieves Windows Autopilot device(s) (v1) or Corporate Identifiers (v2).
+
     .PARAMETER Id
-        Specific device ID to retrieve
-    
+        Specific ID to retrieve.
+        - V1: windowsAutopilotDeviceIdentity Id
+        - V2: importedDeviceIdentity Id
+
     .PARAMETER SerialNumber
-        Filter by serial number (supports partial match)
-    
-    .PARAMETER ClientID
-        Azure AD application (client) ID
-    
-    .PARAMETER ClientSecret
-        Client secret for authentication
-    
-    .PARAMETER TenantID
-        Azure AD tenant ID
-    
+        Filter by serial number.
+        - V1: uses $filter=contains(serialNumber,'...')
+        - V2: requires Manufacturer + Model to build the corporate identifier string.
+
+    .PARAMETER Manufacturer
+        Required with -V2 when using -SerialNumber (to call searchExistingIdentities).
+
+    .PARAMETER Model
+        Required with -V2 when using -SerialNumber (to call searchExistingIdentities).
+
+    .PARAMETER V2
+        Switch to target Autopilot v2 (Corporate Device Identifiers).
+
     .EXAMPLE
-        Get-AutopilotDevice -SerialNumber "12345" -ClientID $id -ClientSecret $secret -TenantID $tenant
-    
+        # V1 - list all
+        Get-AutopilotDevice -ClientID $id -ClientSecret $secret -TenantID $tenant
+
     .EXAMPLE
-        Get-AutopilotDevice -Id $deviceId -ClientID $id -ClientSecret $secret -TenantID $tenant
-    
-    .EXAMPLE
-        $allDevices = Get-AutopilotDevice -ClientID $id -ClientSecret $secret -TenantID $tenant
+        # V2 - search existing corporate identifier
+        Get-AutopilotDevice -V2 -SerialNumber $sn -Manufacturer $mfr -Model $model `
+            -ClientID $id -ClientSecret $secret -TenantID $tenant
     #>
     [CmdletBinding(DefaultParameterSetName = 'All')]
     param (
         [Parameter(Mandatory = $true, ParameterSetName = 'ById')]
         [string]$Id,
-        
+
         [Parameter(Mandatory = $true, ParameterSetName = 'BySerial')]
         [string]$SerialNumber,
-        
+
+        [Parameter()]
+        [string]$Manufacturer,
+
+        [Parameter()]
+        [string]$Model,
+
         [Parameter(Mandatory = $true)]
         [string]$ClientID,
-        
+
         [Parameter(Mandatory = $true)]
         [string]$ClientSecret,
-        
+
         [Parameter(Mandatory = $true)]
-        [string]$TenantID
+        [string]$TenantID,
+
+        [switch]$V2
     )
-    
+
     try {
         $token = Get-GraphToken -ClientID $ClientID -ClientSecret $ClientSecret -TenantID $TenantID
-        
-        # Build URI based on parameter set
-        switch ($PSCmdlet.ParameterSetName) {
-            'ById' {
-                $uri = "deviceManagement/windowsAutopilotDeviceIdentities/$Id"
-            }
-            'BySerial' {
-                $uri = "deviceManagement/windowsAutopilotDeviceIdentities?`$filter=contains(serialNumber,'$SerialNumber')"
-            }
-            'All' {
-                $uri = "deviceManagement/windowsAutopilotDeviceIdentities"
+
+        if ($V2) {
+            # ===== Autopilot v2 (Corporate Identifiers via importedDeviceIdentities) =====
+            $base = "https://graph.microsoft.com/beta/deviceManagement/importedDeviceIdentities"
+            $headers = @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" }
+
+            switch ($PSCmdlet.ParameterSetName) {
+                'ById' {
+                    $uri = "$base/$Id"
+                    return Invoke-RestMethod -Method GET -Uri $uri -Headers $headers
+                }
+                'BySerial' {
+                    if (-not $Manufacturer -or -not $Model) {
+                        throw "For -V2 + -SerialNumber you must also pass -Manufacturer and -Model (searchExistingIdentities requires all three)."
+                    }
+                    $identifier = "$Manufacturer,$Model,$SerialNumber"
+                    $body = @{
+                        importedDeviceIdentities = @(
+                            @{
+                                importedDeviceIdentifier   = $identifier
+                                importedDeviceIdentityType = "manufacturerModelSerial"
+                            }
+                        )
+                    } | ConvertTo-Json -Depth 5
+
+                    $uri = "$base/searchExistingIdentities"
+                    $resp = Invoke-RestMethod -Method POST -Uri $uri -Headers $headers -Body $body
+                    return $resp.value  # collection of importedDeviceIdentity objects (or empty)
+                }
+                'All' {
+                    # Only Windows + manufacturerModelSerial for clarity
+                    $filter = "`$filter=platform eq 'windows' and importedDeviceIdentityType eq 'manufacturerModelSerial'"
+                    $uri = "$base?$filter"
+                    return (Invoke-RestMethod -Method GET -Uri $uri -Headers $headers)
+                }
             }
         }
-        
-        $params = @{
-            Uri         = $uri
-            Method      = 'GET'
-            AccessToken = $token
-            ApiVersion  = 'v1.0'
+        else {
+            # ===== Autopilot v1 (windowsAutopilotDeviceIdentities) =====
+            switch ($PSCmdlet.ParameterSetName) {
+                'ById' {
+                    $uri = "deviceManagement/windowsAutopilotDeviceIdentities/$Id"
+                }
+                'BySerial' {
+                    $uri = "deviceManagement/windowsAutopilotDeviceIdentities?`$filter=contains(serialNumber,'$SerialNumber')"
+                }
+                'All' {
+                    $uri = "deviceManagement/windowsAutopilotDeviceIdentities"
+                }
+            }
+
+            $params = @{
+                Uri         = $uri
+                Method      = 'GET'
+                AccessToken = $token
+                ApiVersion  = 'v1.0'
+            }
+
+            return Invoke-GraphRequest @params
         }
-        
-        return Invoke-GraphRequest @params
     }
     catch {
-        Write-Error "Failed to retrieve Autopilot device(s): $($_.Exception.Message)"
+        Write-Error "Failed to retrieve device(s): $($_.Exception.Message)"
         throw
     }
 }
@@ -430,64 +480,103 @@ function Get-AutopilotDevice {
 function Add-AutopilotImportedDevice {
     <#
     .SYNOPSIS
-        Imports a Windows Autopilot device identity to Intune.
-    
+        Imports an Autopilot v1 device (hardware hash) or a Corporate Identifier (v2).
+
+    .PARAMETER V2
+        Use v2 corporate identifiers (Manufacturer, Model, SerialNumber).
+
+    .PARAMETER Manufacturer
+    .PARAMETER Model
     .PARAMETER SerialNumber
-        The device serial number
-    
+        For -V2: all three are required and will be combined as "Manufacturer,Model,SerialNumber".
+
+    .PARAMETER Description
+        Optional note stored on the importedDeviceIdentity (you can pass your $groupTag here).
+
+    .PARAMETER Overwrite
+        For -V2: set to $true to overwrite on conflicts.
+
     .PARAMETER HardwareIdentifier
-        The device hardware hash
-    
-    .PARAMETER ClientID
-        Azure AD application (client) ID
-    
-    .PARAMETER ClientSecret
-        Client secret for authentication
-    
-    .PARAMETER TenantID
-        Azure AD tenant ID
-    
+        For v1 only (hardware hash).
+
     .EXAMPLE
-        Add-AutopilotImportedDevice -SerialNumber "12345" -HardwareIdentifier $hash -ClientID $id -ClientSecret $secret -TenantID $tenant
+        # V2 (Corporate Identifier)
+        Add-AutopilotImportedDevice -V2 -Manufacturer $mfr -Model $model -SerialNumber $sn `
+            -Description $groupTag -ClientID $id -ClientSecret $secret -TenantID $tenant
+
+    .EXAMPLE
+        # V1 (hardware hash)
+        Add-AutopilotImportedDevice -SerialNumber "12345" -HardwareIdentifier $hash `
+            -ClientID $id -ClientSecret $secret -TenantID $tenant
     #>
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
-        [string]$SerialNumber,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$HardwareIdentifier,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$ClientID,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$ClientSecret,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$TenantID
+        [Parameter()]
+        [switch]$V2,
+
+        [Parameter()][string]$Manufacturer,
+        [Parameter()][string]$Model,
+        [Parameter(Mandatory = $true)][string]$SerialNumber,
+
+        [Parameter()][string]$Description = "",
+        [Parameter()][bool]$Overwrite = $false,
+
+        [Parameter()][string]$HardwareIdentifier,  # v1 only
+
+        [Parameter(Mandatory = $true)][string]$ClientID,
+        [Parameter(Mandatory = $true)][string]$ClientSecret,
+        [Parameter(Mandatory = $true)][string]$TenantID
     )
-    
+
     try {
         $token = Get-GraphToken -ClientID $ClientID -ClientSecret $ClientSecret -TenantID $TenantID
-        
-        $body = @{
-            serialNumber       = $SerialNumber
-            hardwareIdentifier = $HardwareIdentifier
+
+        if ($V2) {
+            if (-not $Manufacturer -or -not $Model) {
+                throw "For -V2 you must pass -Manufacturer and -Model in addition to -SerialNumber."
+            }
+
+            $headers = @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" }
+            $uri = "https://graph.microsoft.com/beta/deviceManagement/importedDeviceIdentities/importDeviceIdentityList"
+
+            $identifier = "$Manufacturer,$Model,$SerialNumber"
+            $body = @{
+                importedDeviceIdentities          = @(
+                    @{
+                        importedDeviceIdentifier   = $identifier
+                        importedDeviceIdentityType = "manufacturerModelSerial"
+                        description                = $Description
+                    }
+                )
+                overwriteImportedDeviceIdentities = $Overwrite
+            } | ConvertTo-Json -Depth 10
+
+            return Invoke-RestMethod -Method POST -Uri $uri -Headers $headers -Body $body
         }
-        
-        $params = @{
-            Uri         = "deviceManagement/importedWindowsAutopilotDeviceIdentities"
-            Method      = 'POST'
-            Body        = $body
-            AccessToken = $token
-            ApiVersion  = 'beta'
+        else {
+            # v1 Autopilot import (hardware hash)
+            if (-not $HardwareIdentifier) {
+                throw "For v1 import you must provide -HardwareIdentifier."
+            }
+
+            $body = @{
+                serialNumber       = $SerialNumber
+                hardwareIdentifier = $HardwareIdentifier
+            }
+
+            $params = @{
+                Uri         = "deviceManagement/importedWindowsAutopilotDeviceIdentities"
+                Method      = 'POST'
+                Body        = $body
+                AccessToken = $token
+                ApiVersion  = 'v1.0'
+            }
+
+            return Invoke-GraphRequest @params
         }
-        
-        return Invoke-GraphRequest @params
     }
     catch {
-        Write-Error "Failed to import Autopilot device: $($_.Exception.Message)"
+        Write-Error "Failed to import device/identifier: $($_.Exception.Message)"
         throw
     }
 }
@@ -576,7 +665,8 @@ function Invoke-CmdLine {
     
     $output = if ($Silent) {
         cmd /c "$Application $ArgumentList 2>&1"
-    } else {
+    }
+    else {
         cmd /c "$Application $ArgumentList"
     }
     
@@ -702,7 +792,8 @@ set id="de94bba4-06d1-4d40-a16a-bfd50179d6ac"
 gpt attributes=0x8000000000000001
 exit
 "@
-    } else {
+    }
+    else {
         @"
 select disk $TargetDrive
 clean
@@ -737,7 +828,8 @@ function Add-Driver {
     if (Get-ChildItem "$DriverPath\*.inf" -Recurse -ErrorAction SilentlyContinue) {
         Write-Host "Adding drivers from: $DriverPath" -ForegroundColor Cyan
         Invoke-CmdLine -Application "DISM" -ArgumentList "/Image:$ScratchDrive /Add-Driver /Driver:`"$DriverPath`" /Recurse"
-    } else {
+    }
+    else {
         Write-Host "No drivers found at: $DriverPath" -ForegroundColor Cyan
     }
 }
@@ -753,7 +845,8 @@ function Add-Package {
     if (Get-ChildItem $PackagePath -ErrorAction SilentlyContinue) {
         Write-Host "Adding packages from: $PackagePath" -ForegroundColor Cyan
         Invoke-CmdLine -Application "DISM" -ArgumentList "/Image:$ScratchDrive /Add-Package /PackagePath:$PackagePath /ScratchDir:$ScratchPath"
-    } else {
+    }
+    else {
         Write-Host "No packages found at: $PackagePath" -ForegroundColor Cyan
     }
 }
@@ -768,11 +861,13 @@ function Show-Menu {
         Write-Host "`n================ $Title ================" -ForegroundColor Yellow
         Write-Host "1: Exit" -ForegroundColor Green
         Write-Host "2: Install Windows 11" -ForegroundColor Green
-        Write-Host "3: Install Windows 11 and Register Autopilot" -ForegroundColor Green
-        Write-Host "4: Register Autopilot" -ForegroundColor Green
+        Write-Host "3: Install Windows 11 and Register Autopilot (v1 - Hardware Hash)" -ForegroundColor Green
+        Write-Host "4: Install Windows 11 and Register Autopilot (v2 - Corporate ID)" -ForegroundColor Green
+        Write-Host "5: Register Autopilot (v1 - Hardware Hash)" -ForegroundColor Green
+        Write-Host "6: Register Autopilot (v2 - Corporate ID)" -ForegroundColor Green
         
-        $input = Read-Host "`nEnter a number (1-4)"
-        if ($input -match '^[1-4]$') { return [int]$input }
+        $choice = Read-Host "`nEnter a number (1-6)"
+        if ($choice -match '^[1-6]$') { return [int]$choice }
         
         Write-Host "`nInvalid selection." -ForegroundColor Red
         Start-Sleep -Seconds 2
@@ -789,9 +884,9 @@ function Show-TenantSelection {
     }
     
     do {
-        $input = Read-Host "`nEnter a number (1-$($Tenants.Count))"
-        if ($input -match "^\d+$" -and [int]$input -ge 1 -and [int]$input -le $Tenants.Count) {
-            return $Tenants[[int]$input - 1]
+        $choice = Read-Host "`nEnter a number (1-$($Tenants.Count))"
+        if ($choice -match "^\d+$" -and [int]$choice -ge 1 -and [int]$choice -le $Tenants.Count) {
+            return $Tenants[[int]$choice - 1]
         }
         Write-Host "Invalid selection." -ForegroundColor Red
     } while ($true)
@@ -807,9 +902,9 @@ function Show-WarningPrompt {
         Write-Host "`nThis will cause irreversible changes to your device!" -ForegroundColor Red
         Write-Host "Continue? (Y/N)`n" -ForegroundColor Yellow
         
-        $input = (Read-Host).Trim().ToUpper()
-        if ($input -eq 'Y') { return $true }
-        if ($input -eq 'N') { return $false }
+        $choice = (Read-Host).Trim().ToUpper()
+        if ($choice -eq 'Y') { return $true }
+        if ($choice -eq 'N') { return $false }
         
         Write-Host "`nInvalid selection." -ForegroundColor Yellow
         Start-Sleep -Seconds 2
@@ -832,12 +927,21 @@ try {
     
     # Show welcome banner
     Clear-Host
-    Write-Host $([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($welcomebanner)))
+    try {
+        $decodedBytes = [Convert]::FromBase64String($welcomebanner)
+        $decoded = [Text.Encoding]::UTF8.GetString($decodedBytes)
+        if (-not $decoded) { $decoded = "Intune USB Deployment" }
+    }
+    catch {
+        $decoded = "Intune USB Deployment"
+    }
+    Write-Host $decoded
     
     # Tenant selection
     if ($tenants.Count -gt 1) {
         $tenant = Show-TenantSelection -Tenants $tenants
-    } else {
+    }
+    else {
         $tenant = $tenants[0]
     }
     
@@ -846,162 +950,229 @@ try {
     $graphclientid = $tenant.graphclientid
     $graphsecret = $tenant.graphsecret
     
-    # Show menu
-    Clear-Host
-    Write-Host $([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($welcomebanner)))
-    $userChoice = Show-Menu
-    
-    $autoPilot = $false
-    $skipInstall = $false
-    $exitEarly = $false
-    
-    switch ($userChoice) {
-        1 {
-            $exitEarly = $true
-            throw "User cancelled operation"
+    do {
+        # Show menu
+        Clear-Host
+        try {
+            $decodedBytes = [Convert]::FromBase64String($welcomebanner)
+            $decoded = [Text.Encoding]::UTF8.GetString($decodedBytes)
+            if (-not $decoded) { $decoded = "Intune USB Deployment" }
         }
-        2 {
-            if (-not (Show-WarningPrompt)) {
+        catch {
+            $decoded = "Intune USB Deployment"
+        }
+        Write-Host $decoded
+        $userChoice = Show-Menu
+    
+        $autoPilot = $false
+        $autoPilotV2 = $false
+        $skipInstall = $false
+        $exitEarly = $false
+    
+        switch ($userChoice) {
+            1 {
                 $exitEarly = $true
+                $scriptFinished = $true
                 throw "User cancelled operation"
             }
-        }
-        3 {
-            if (Show-WarningPrompt) {
+            2 {
+                if (-not (Show-WarningPrompt)) { $loopBack = $true }
+            }
+            3 {
+                if (Show-WarningPrompt) { $autoPilot = $true } 
+                else { $loopBack = $true }
+            }
+            4 {
+                if (Show-WarningPrompt) { $autoPilotV2 = $true } 
+                else { $loopBack = $true }
+            }
+            5 {
+                $skipInstall = $true
                 $autoPilot = $true
-            } else {
-                $exitEarly = $true
-                throw "User cancelled operation"
+                $loopBack = $true # Return to menu after registration
+            }
+            6 {
+                $skipInstall = $true
+                $autoPilotV2 = $true
+                $loopBack = $true # Return to menu after registration
             }
         }
-        4 {
-            $skipInstall = $true
-            $autoPilot = $true
-        }
-    }
+
+        # Skip logic if user cancelled in warning prompt
+        if ($loopBack -and -not $skipInstall) { continue }
     
-    # Autopilot registration
-    if ($autoPilot) {
-        if (Test-Path X:\Windows\System32\PCPKsp.dll) {
-            Invoke-CmdLine -Application rundll32 -ArgumentList "X:\Windows\System32\PCPKsp.dll, DllInstall"
-        }
-        
-        Set-Location $PSScriptRoot
-        Write-Host "`nRegistering device to Autopilot..." -ForegroundColor Cyan
-        
-        if (Test-Path "$PSScriptRoot\OA3.xml") {
-            Remove-Item "$PSScriptRoot\OA3.xml" -Force
-        }
-        
-        $SerialNumber = (Get-CimInstance -Class Win32_BIOS).SerialNumber
-        Write-Host "Serial Number: $SerialNumber" -ForegroundColor Cyan
-        
-        $dev = Get-AutopilotDevice -SerialNumber $SerialNumber -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
-        
-        if ($dev) {
-            $computerName = $dev.displayName
-            Write-Host "$computerName already registered in Autopilot!" -ForegroundColor Yellow
-        } else {
-            & "$PSScriptRoot\oa3tool.exe" /Report /ConfigFile="$PSScriptRoot\OA3.cfg" /NoKeyCheck
-            
-            if (Test-Path "$PSScriptRoot\OA3.xml") {
-                [xml]$xmlhash = Get-Content "$PSScriptRoot\OA3.xml"
-                $DeviceHashData = $xmlhash.Key.HardwareHash
-                Remove-Item "$PSScriptRoot\OA3.xml" -Force
-                
-                Add-AutopilotImportedDevice -SerialNumber $SerialNumber -HardwareIdentifier $DeviceHashData -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
-                
-                Write-Host "Waiting for Autopilot registration..." -ForegroundColor Cyan
-                Start-Sleep -Seconds 15
-                
-                while ($null -eq $dev) {
-                    $dev = Get-AutopilotDevice -SerialNumber $SerialNumber -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
-                    if ($null -eq $dev) { Start-Sleep -Seconds 5 }
+        # Autopilot registration
+        if ($autoPilot -or $autoPilotV2) {
+            if ($autoPilot) {
+                Write-Host "`n=== Autopilot Registration (v1 - Hardware Hash) ===" -ForegroundColor Magenta
+                if (Test-Path X:\Windows\System32\PCPKsp.dll) {
+                    Invoke-CmdLine -Application rundll32 -ArgumentList "X:\Windows\System32\PCPKsp.dll, DllInstall"
                 }
-                Write-Host "Device registered: $($dev.id)" -ForegroundColor Green
+        
+                Set-Location $PSScriptRoot
+                Write-Host "`nRegistering device to Autopilot (v1 - Hardware Hash)..." -ForegroundColor Cyan
+        
+                if (Test-Path "$PSScriptRoot\OA3.xml") {
+                    Remove-Item "$PSScriptRoot\OA3.xml" -Force
+                }
+        
+                $SerialNumber = (Get-CimInstance -Class Win32_BIOS).SerialNumber
+                Write-Host "Serial Number: $SerialNumber" -ForegroundColor Cyan
+        
+                $dev = Get-AutopilotDevice -SerialNumber $SerialNumber -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+        
+                if ($dev) {
+                    $computerName = $dev.displayName
+                    Write-Host "$computerName already registered in Autopilot!" -ForegroundColor Yellow
+                }
+                else {
+                    & "$PSScriptRoot\oa3tool.exe" /Report /ConfigFile="$PSScriptRoot\OA3.cfg" /NoKeyCheck
+            
+                    if (Test-Path "$PSScriptRoot\OA3.xml") {
+                        [xml]$xmlhash = Get-Content "$PSScriptRoot\OA3.xml"
+                        $DeviceHashData = $xmlhash.Key.HardwareHash
+                        Remove-Item "$PSScriptRoot\OA3.xml" -Force
+                
+                        Add-AutopilotImportedDevice -SerialNumber $SerialNumber -HardwareIdentifier $DeviceHashData -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+                
+                        Write-Host "Waiting for Autopilot registration..." -ForegroundColor Cyan
+                        Start-Sleep -Seconds 15
+                
+                        while ($null -eq $dev) {
+                            $dev = Get-AutopilotDevice -SerialNumber $SerialNumber -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+                            if ($null -eq $dev) { Start-Sleep -Seconds 5 }
+                        }
+                        Write-Host "Device registered: $($dev.id)" -ForegroundColor Green
+                    }
+                }
+        
+                if ($computerName) {
+                    $choice = Read-Host "Enter Computer Name (Current: $computerName, press Enter to keep)"
+                    if ($choice) { $computerName = $choice }
+                }
+                else {
+                    $computerName = Read-Host "Enter Computer Name"
+                }
+        
+                Set-AutopilotDevice -Id $dev.id -DisplayName $computerName -GroupTag $groupTag -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+                Write-Host "Device name set to: $computerName" -ForegroundColor Green
             }
-        }
-        
-        if ($computerName) {
-            $input = Read-Host "Enter Computer Name (Current: $computerName, press Enter to keep)"
-            if ($input) { $computerName = $input }
-        } else {
-            $computerName = Read-Host "Enter Computer Name"
-        }
-        
-        Set-AutopilotDevice -Id $dev.id -DisplayName $computerName -GroupTag $groupTag -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
-        Write-Host "Device name set to: $computerName" -ForegroundColor Green
-    }
     
-    # Windows installation
-    if (-not $skipInstall) {
-        $drives = @(Get-PhysicalDisk)
-        $targetDrive = Get-SystemDeviceId
-        Set-DrivePartition -WinPEDrive $usb.winPEDrive -TargetDrive $targetDrive
-        
-        Write-Host "`nSetting up paths..." -ForegroundColor Yellow
-        $usb.SetScratch("W:\recycler\scratch")
-        $usb.SetRecovery("R:\RECOVERY\WINDOWSRE")
-        New-Item -Path $usb.scratch.FullName -ItemType Directory -Force | Out-Null
-        New-Item -Path $usb.recovery.FullName -ItemType Directory -Force | Out-Null
-        
-        Write-Host "`nApplying Windows image..." -ForegroundColor Yellow
-        $imageIndex = Get-Content "$($usb.installPath)\imageIndex.json" | ConvertFrom-Json
-        Invoke-CmdLine -Application "DISM" -ArgumentList "/Apply-Image /ImageFile:$($usb.installPath)\install.wim /Index:$($imageIndex.imageIndex) /ApplyDir:$($usb.scRoot) /EA /ScratchDir:$($usb.scratch)"
-        
-        # Recovery environment
-        $reWimPath = "$($usb.scRoot)Windows\System32\recovery\winre.wim"
-        if (Test-Path $reWimPath) {
-            Write-Host "`nConfiguring recovery environment..." -ForegroundColor Yellow
-            (Get-ChildItem $reWimPath -Force).Attributes = "NotContentIndexed"
-            Move-Item $reWimPath "$($usb.recovery.FullName)\winre.wim"
-            
-            if (Get-ChildItem "$($usb.driverPath)\$deviceModel\storage\*.inf" -Recurse -ErrorAction SilentlyContinue) {
-                New-Item "W:\Temp" -ItemType Directory | Out-Null
-                Invoke-CmdLine -Application "DISM" -ArgumentList "/Mount-Image /ImageFile:$($usb.recovery.FullName)\winre.wim /Index:1 /MountDir:W:\temp"
-                Add-Driver -DriverPath "$($usb.driverPath)\$deviceModel\storage" -ScratchDrive "W:\temp"
-                Invoke-CmdLine -Application "DISM" -ArgumentList "/Unmount-Image /MountDir:w:\temp /Commit"
-                Remove-Item "W:\temp" -Force -Recurse
+            if ($autoPilotV2) {
+                Set-Location $PSScriptRoot
+                Write-Host "`n=== Autopilot Registration (v2 - Corporate Identifiers) ===" -ForegroundColor Magenta
+                Write-Host "Benefits: Faster, no TPM extraction needed" -ForegroundColor Yellow
+
+                # Device info
+                $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
+                $bios = Get-CimInstance -ClassName Win32_BIOS
+
+                $SerialNumber = $bios.SerialNumber.Trim()
+                $manufacturer = $computerSystem.Manufacturer.Trim()
+                $model = $computerSystem.Model.Trim()
+
+                Write-Host "`nDevice Information:" -ForegroundColor Cyan
+                Write-Host "  Serial Number: $SerialNumber" -ForegroundColor Green
+                Write-Host "  Manufacturer:  $manufacturer" -ForegroundColor Green
+                Write-Host "  Model:         $model" -ForegroundColor Green
+
+                # Check if corporate identifier already exists (v2)
+                $existing = Get-AutopilotDevice -V2 -SerialNumber $SerialNumber -Manufacturer $manufacturer -Model $model `
+                    -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+
+                if ($existing -and $existing.Count -gt 0) {
+                    Write-Host "`nCorporate identifier already present in Intune." -ForegroundColor Yellow
+                }
+                else {
+                    Write-Host "`nRegistering corporate identifier in Intune..." -ForegroundColor Cyan
+
+                    $resp = Add-AutopilotImportedDevice -V2 -Manufacturer $manufacturer -Model $model -SerialNumber $SerialNumber `
+                        -Description $groupTag `
+                        -ClientID $graphclientid -ClientSecret $graphsecret -TenantID $tenantid
+
+                    Write-Host "Import completed." -ForegroundColor Green
+                }
             }
-            
-            (Get-ChildItem "$($usb.recovery.FullName)\winre.wim" -Force).Attributes = "ReadOnly", "Hidden", "System", "Archive", "NotContentIndexed"
-            Invoke-CmdLine -Application "$($usb.scRoot)Windows\System32\reagentc" -ArgumentList "/SetREImage /Path $($usb.recovery.FullName) /target $($usb.scRoot)Windows" -Silent
-        }
-        
-        # Boot environment
-        Write-Host "`nConfiguring boot environment..." -ForegroundColor Yellow
-        Invoke-CmdLine -Application "$($usb.scRoot)Windows\System32\bcdboot" -ArgumentList "$($usb.scRoot)Windows /s s: /f all"
-        
-        # Copy unattended.xml
-        if (Test-Path "$($usb.winPESource)scripts\unattended.xml") {
-            Write-Host "Copying unattended.xml..." -ForegroundColor Cyan
-            if (-not (Test-Path "$($usb.scRoot)Windows\Panther")) {
-                New-Item "$($usb.scRoot)Windows\Panther" -ItemType Directory -Force | Out-Null
+
+            Write-Host "`nRegistration Task Finished." -ForegroundColor Cyan
+            if ($skipInstall) {
+                Write-Host "Returning to menu..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
             }
-            Copy-Item "$($usb.winPESource)\scripts\unattended.xml" "$($usb.scRoot)Windows\Panther\unattended.xml"
         }
+    
+        # Windows installation
+        if (-not $skipInstall -and -not $exitEarly) {
+            $drives = @(Get-PhysicalDisk)
+            $targetDrive = Get-SystemDeviceId
+            Set-DrivePartition -WinPEDrive $usb.winPEDrive -TargetDrive $targetDrive
         
-        # Copy provisioning packages
-        if (Test-Path "$($usb.winPESource)scripts\*.ppkg") {
-            Write-Host "Copying provisioning packages..." -ForegroundColor Cyan
-            Copy-Item "$($usb.winPESource)\scripts\*.ppkg" "$($usb.scRoot)Windows\Panther\"
+            Write-Host "`nSetting up paths..." -ForegroundColor Yellow
+            $usb.SetScratch("W:\recycler\scratch")
+            $usb.SetRecovery("R:\RECOVERY\WINDOWSRE")
+            New-Item -Path $usb.scratch.FullName -ItemType Directory -Force | Out-Null
+            New-Item -Path $usb.recovery.FullName -ItemType Directory -Force | Out-Null
+        
+            Write-Host "`nApplying Windows image..." -ForegroundColor Yellow
+            $imageIndex = Get-Content "$($usb.installPath)\imageIndex.json" | ConvertFrom-Json
+            Invoke-CmdLine -Application "DISM" -ArgumentList "/Apply-Image /ImageFile:$($usb.installPath)\install.wim /Index:$($imageIndex.imageIndex) /ApplyDir:$($usb.scRoot) /EA /ScratchDir:$($usb.scratch)"
+        
+            # Recovery environment
+            $reWimPath = "$($usb.scRoot)Windows\System32\recovery\winre.wim"
+            if (Test-Path $reWimPath) {
+                Write-Host "`nConfiguring recovery environment..." -ForegroundColor Yellow
+                (Get-ChildItem $reWimPath -Force).Attributes = "NotContentIndexed"
+                Move-Item $reWimPath "$($usb.recovery.FullName)\winre.wim"
+            
+                if (Get-ChildItem "$($usb.driverPath)\$deviceModel\storage\*.inf" -Recurse -ErrorAction SilentlyContinue) {
+                    New-Item "W:\Temp" -ItemType Directory | Out-Null
+                    Invoke-CmdLine -Application "DISM" -ArgumentList "/Mount-Image /ImageFile:$($usb.recovery.FullName)\winre.wim /Index:1 /MountDir:W:\temp"
+                    Add-Driver -DriverPath "$($usb.driverPath)\$deviceModel\storage" -ScratchDrive "W:\temp"
+                    Invoke-CmdLine -Application "DISM" -ArgumentList "/Unmount-Image /MountDir:w:\temp /Commit"
+                    Remove-Item "W:\temp" -Force -Recurse
+                }
+            
+                (Get-ChildItem "$($usb.recovery.FullName)\winre.wim" -Force).Attributes = "ReadOnly", "Hidden", "System", "Archive", "NotContentIndexed"
+                Invoke-CmdLine -Application "$($usb.scRoot)Windows\System32\reagentc" -ArgumentList "/SetREImage /Path $($usb.recovery.FullName) /target $($usb.scRoot)Windows" -Silent
+            }
+        
+            # Boot environment
+            Write-Host "`nConfiguring boot environment..." -ForegroundColor Yellow
+            Invoke-CmdLine -Application "$($usb.scRoot)Windows\System32\bcdboot" -ArgumentList "$($usb.scRoot)Windows /s s: /f all"
+        
+            # Copy unattended.xml
+            if (Test-Path "$($usb.winPESource)scripts\unattended.xml") {
+                Write-Host "Copying unattended.xml..." -ForegroundColor Cyan
+                if (-not (Test-Path "$($usb.scRoot)Windows\Panther")) {
+                    New-Item "$($usb.scRoot)Windows\Panther" -ItemType Directory -Force | Out-Null
+                }
+                Copy-Item "$($usb.winPESource)\scripts\unattended.xml" "$($usb.scRoot)Windows\Panther\unattended.xml"
+            }
+        
+            # Copy provisioning packages
+            if (Test-Path "$($usb.winPESource)scripts\*.ppkg") {
+                Write-Host "Copying provisioning packages..." -ForegroundColor Cyan
+                Copy-Item "$($usb.winPESource)\scripts\*.ppkg" "$($usb.scRoot)Windows\Panther\"
+            }
+        
+            # Remove public shortcuts
+            Remove-Item "$($usb.scRoot)Users\public\Desktop\*.lnk" -Force -ErrorAction SilentlyContinue
+        
+            # Apply drivers
+            if (Get-ChildItem "$($usb.driverPath)\$deviceModel\*.inf" -Recurse -ErrorAction SilentlyContinue) {
+                Write-Host "`nApplying device drivers..." -ForegroundColor Yellow
+                Add-Driver -DriverPath "$($usb.driverPath)\$deviceModel" -ScratchDrive $usb.scRoot
+            }
+        
+            # Apply packages
+            if (Get-ChildItem "$($usb.packagePath)\*.cab" -Recurse -ErrorAction SilentlyContinue) {
+                Write-Host "`nApplying packages..." -ForegroundColor Yellow
+                Add-Package -PackagePath "$($usb.packagePath)\" -ScratchDrive $usb.scRoot -ScratchPath $usb.scratch
+            }
+            $scriptFinished = $true # Exit loop after full install
         }
-        
-        # Remove public shortcuts
-        Remove-Item "$($usb.scRoot)Users\public\Desktop\*.lnk" -Force -ErrorAction SilentlyContinue
-        
-        # Apply drivers
-        if (Get-ChildItem "$($usb.driverPath)\$deviceModel\*.inf" -Recurse -ErrorAction SilentlyContinue) {
-            Write-Host "`nApplying device drivers..." -ForegroundColor Yellow
-            Add-Driver -DriverPath "$($usb.driverPath)\$deviceModel" -ScratchDrive $usb.scRoot
-        }
-        
-        # Apply packages
-        if (Get-ChildItem "$($usb.packagePath)\*.cab" -Recurse -ErrorAction SilentlyContinue) {
-            Write-Host "`nApplying packages..." -ForegroundColor Yellow
-            Add-Package -PackagePath "$($usb.packagePath)\" -ScratchDrive $usb.scRoot -ScratchPath $usb.scratch
-        }
-    }
+
+    } while (-not $scriptFinished)
     
     $completed = $true
 }
@@ -1017,7 +1188,8 @@ finally {
     
     if ($errorMsg) {
         Write-Host "`nERROR: $errorMsg" -ForegroundColor Red
-    } else {
+    }
+    else {
         $status = if ($completed) { "completed" } else { "stopped prematurely" }
         Write-Host "`nProvisioning $status. Time taken: $($sw.Elapsed)" -ForegroundColor Green
     }
