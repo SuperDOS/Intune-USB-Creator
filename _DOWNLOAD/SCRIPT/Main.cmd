@@ -5,22 +5,11 @@ title INTUNE USB DEPLOYMENT
 SET WiFiEnabled=FALSE
 
 :: -------------------------------------------------
-:: Load drivers 
-:: -------------------------------------------------
-if "%DriverSource%"=="" goto :SKIP_DRIVERS
-echo [INFO] Loading drivers from: %DriverSource%
-for /r "%DriverSource%" %%F in (*.inf) do (
-    echo Loading: %%F
-    drvload "%%F" >nul
-)
-:SKIP_DRIVERS
-
-:: -------------------------------------------------
 :: Wi-Fi Support
 :: -------------------------------------------------
 
 echo [INFO] Starting Wireless Services
-REM net start wlansvc
+REM net start wlansvc >nul 2>&1
 
 :: Adding the profile relative to this script's location 
 echo [INFO] Adding Wi-Fi Profile: %~dp0wificonf.xml 
@@ -42,7 +31,7 @@ if /I NOT "%WiFiEnabled%"=="TRUE" goto :GlobalCheck
 
 :: --- Wi-Fi Specific Logic ---
 :: Check if the WiFi interface is connected specifically
-netsh wlan show interfaces | find /i "connected" >nul
+netsh wlan show interfaces | find /i "connected" >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] Wi-Fi Connected.
     goto :RUN_PROVISIONING
@@ -53,13 +42,13 @@ if %retryCount% GEQ 20 (
     goto :RUN_PROVISIONING
 )
 
-echo [WAIT] Waiting for Wi-Fi... (%retryCount%/20
-ping localhost -n 5 >nul
+echo [WAIT] Waiting for Wi-Fi... (%retryCount%/20)
+ping localhost -n 5 >nul 2>&1
 goto :CheckNet
 
 :: --- Ethernet / Global Logic ---
 :GlobalCheck
-ping -n 1 8.8.8.8 >nul
+ping -n 1 8.8.8.8 >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] Network heartbeat detected.
     goto :RUN_PROVISIONING
@@ -71,7 +60,7 @@ if %retryCount% GEQ 12 (
 )
 
 echo [WAIT] Waiting for Network... (%retryCount%/12)
-ping localhost -n 5 >nul
+ping localhost -n 5 >nul 2>&1
 goto :CheckNet
 
 :: -------------------------------------------------
