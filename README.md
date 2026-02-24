@@ -18,22 +18,24 @@ It will then look for any WinPE drivers under Drivers\WinPE and load them
 Then a menu will be shown what you want to do
 
 - Install Windows
-- Install Windows and Register Autopilot
+- Install Windows and Register Autopilot (v1 or v2)
 - Register Autopilot
 
-If you choose Install Windows and Register Autopilot it will extract the hardware hash with OA3.tool and try to upload it via graph to Intune
-
+If you choose Install Windows and Register Autopilot v1 it will extract the hardware hash with OA3.tool and try to upload it via graph to Intune
 After it has succeded it will prompt to enter a device name
 
 If you look under Intune/Windows Enrollment/Devices it will be updated there
 
 ![image](https://github.com/user-attachments/assets/9710580e-2429-4ff4-a7f2-e49f49730f83)
 
+For Autopilot v2/Autopilot Device Preparation devices will be registered with Corporate device identifiers manufacturer,Model,Serial
+You will find it under Intune/Windows Enrollment/Corporate device identifiers
+
 It will proceed and format the computer's drive and partition it, if there's storage drivers for the detected model it will be injected to the windows recovery image.
 
 If there's a unattented.xml and ppkg files under the scripts folder it will be copied as well
 
-Public shortcuts will be removed
+Public desktop shortcuts will be removed
 
 Computer specific drivers will be added to the installation
 
@@ -48,8 +50,9 @@ Done!
 - [Windows WinPE add-on for the Windows ADK](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install) - **Optional when using `-useWinRE`**
 - A copy of PCPKsp.dll (found on C:\Windows\System32 on a Windows 11 machine)
 - A copy of oa3tool.exe in _DOWNLOAD\SCRIPT (found in [Windows ADK Deployment Tools](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install), run ".\adksetup.exe /installpath C:\temp\adk /features OptionId.DeploymentTools /quiet" and copy C:\Temp\adk\Assessment and Deployment Kit\Deployment Tools\amd64\Licensing\OA30\oa3tool.exe)
-- Register an Enterprise app in Entra under App registration with permission DeviceManagementServiceConfig.ReadWrite.All and admin consent, create a client secret for uploading of hashes to intune
-![image](https://github.com/user-attachments/assets/1b8c2dce-06ee-4dad-801f-c625c2f7c2e2)
+- Register an Enterprise app in Entra under App registration with permission DeviceManagementServiceConfig.ReadWrite.All and admin consent, create a client secret for uploading of hashes to intune, for Autopilot v2 you also need DeviceManagementConfiguration.ReadWrite.All
+<img width="1078" height="123" alt="image" src="https://github.com/user-attachments/assets/b3191bff-cbaf-4155-a469-1cc7293920f2" />
+
 
 ### WinRE Support with WiFi
 Use `-useWinRE` to extract and use WinRE (Windows Recovery Environment) from the Windows install.wim instead of WinPE. This provides:
@@ -146,7 +149,7 @@ It's possible to configure multiple tenants, if more than one tenant is configur
 - `tenant` - Array of tenant configurations for multi-tenant support
 - `iudwelcomebanner` - Custom ASCII art banner (base64 encoded)
 - `windowsIsoPath` - Path to Windows ISO file
-- `imageIndex` - Windows edition to extract
+- `imageIndex` - Windows edition to extract, if not included you will be prompted to choose Windows version e.g Pro
 - `iucversion` - Script version tracking
 - `wifissid` - WiFi network name (optional, for WinRE WiFi support)
 - `wifipwd` - WiFi network password (optional, for WinRE WiFi support)
