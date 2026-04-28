@@ -774,7 +774,7 @@ if ($createDataFolder) {
             if ($(Test-IsDirectoryEmpty $winPEupdates)) {
                 "Adding Updates..."
                 Get-ChildItem $winPEupdates | ForEach-Object { 
-                    Add-WinPEPackage -Path $peMount -PackagePath $_.FullName
+                    Add-WinPEPackage -MountPath $peMount -PackagePath $_.FullName
                 }
             }
 
