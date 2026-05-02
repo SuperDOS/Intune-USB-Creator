@@ -100,7 +100,7 @@ If you want to use your own welcome banner you can use [https://www.asciiart.eu/
 ## Prepare Config
 The directory "_DOWNLOAD\WINPEFILES" contains files that will be added to the WinPE Boot image
 
-**PCPKsp.dll** - needed to be able to extract hash from the machine in WinPE, need to get your own copy from a C:\Windows\System32 on a Windows 10/11 machine
+**PCPKsp.dll** - needed to be able to extract hash from the machine in WinPE, need to get your own copy from a C:\Windows\System32 on a Windows 11 machine
 
 **startnet.cmd** - command file that starts Intune USB Deployment
 
@@ -223,7 +223,7 @@ This formats a USB drive and copies the deployment share to it. The script autom
 
 ### After the creation of the DataFolder the _DATA folder will contain:
 
-**Drivers** = Computer model drivers, extract driver cab manually from the manufacturer and name the folder as the model name i.e. Latitude 5350, if you need to add a driver to WinPE after creating the drive you can add a folder here name WinPE and i will load these drivers before starting
+**Drivers** = Computer model drivers, extract driver cab manually from the manufacturer and name the folder as the model name i.e. Latitude 5350, if you need to add a driver to WinPE after creating the drive you can add a folder here named WinPE and it will load these drivers before starting
 
 **Images** = Windows Wim image
 
